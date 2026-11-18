@@ -1,0 +1,20 @@
+# Core deep learning framework (PyTorch, choose the version that matches your CUDA, or use CPU version)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# YOLO training/inference framework (ultralytics already includes YOLOv8/v10 support)
+ultralytics>=8.2.0
+
+# Image processing and desktop interface
+opencv-python>=4.8.0
+numpy>=1.23.0,<2.0.0
+PyQt6>=6.5.0
+
+# Network requests (for IP Webcam MJPEG stream)
+requests>=2.28.0
+
+# YAML configuration file parsing (for data.yaml)
+PyYAML>=6.0
+
+# Progress bar (training process)
+tqdm>=4.65.0
