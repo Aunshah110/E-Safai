@@ -11,13 +11,16 @@ CLASS_MERGE = {
     "PLASTIC": "Garbage",
 }
 
+m = YOLO("models/best.pt")
+print(m.names) 
+
 class GarbageDetector:
     def __init__(self, model_path="models/best.pt", conf=0.3):
         self.model = YOLO(model_path)
         self.conf = conf
 
     def detect(self, frame: np.ndarray):
-        results = self.model(frame, conf=self.conf, imgsz=416, verbose=False)
+        results = self.model(frame, conf=self.conf, imgsz=416, agnostic_nms=True, verbose=False)
         boxes = results[0].boxes
         detections = []
         for box in boxes:

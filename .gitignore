@@ -1,3 +1,6 @@
-__pycache__/
 .env/
+__pycache__/
 *.pyc
+finetune_neg.py
+neg.py
+save.py
