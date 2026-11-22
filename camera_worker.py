@@ -9,23 +9,32 @@ from detector_engine import GarbageDetector
 class CameraWorker(QThread):
     frame_ready = pyqtSignal(int, object, str)
     reset_screen = pyqtSignal(int, str)
+    evidence_saved = pyqtSignal(int, dict)
+    location_ready = pyqtSignal(int, float, float)   # NEW
 
-    def __init__(self, cam_id, ip, port, detector):
+    def __init__(self, cam_id, ip, port, detector: GarbageDetector,
+                 evidence_manager, location_manager=None):
         super().__init__()
         self.cam_id = cam_id
         self.snapshot_url = f"http://{ip}:{port}/shot.jpg"
         self.detector = detector
+        self.evidence_manager = evidence_manager
         self.running = True
         self.infer_interval = 2.0
         self.last_infer_time = 0
         self.RECONNECT_TIMEOUT = 10
         self.FETCH_INTERVAL = 0.1
         self.last_fetch = 0
+        self.location_manager = location_manager
+        self.last_location = None
 
-        # Persisted detection state
-        self.current_dets = []        # list of dicts {box, conf, cls}
-        self.miss_count = {}          # id(det) -> consecutive misses
-        self.MAX_MISSES = 3           # drop a detection after N inference cycles without match
+        self.current_dets = []
+        self.miss_count = {}
+        self.MAX_MISSES = 3
+
+        self.last_state = "Clean"
+        self.last_save_time = 0.0
+        self.MIN_SAVE_INTERVAL = 10.0
 
     def _fetch_snapshot(self):
         try:
@@ -58,7 +67,6 @@ class CameraWorker(QThread):
         return inter / (area_a + area_b - inter + 1e-6)
 
     def _merge_detections(self, new_dets):
-        """Match new detections to old ones by IoU; keep unmatched old ones for a few cycles."""
         updated = []
         used_old = set()
 
@@ -72,7 +80,6 @@ class CameraWorker(QThread):
                     best_iou, best_idx = iou, i
 
             if best_iou > 0.3:
-                # Same object — smooth the box and confidence
                 old = self.current_dets[best_idx]
                 sm_box = (0.5 * np.array(nd["box"]) + 0.5 * np.array(old["box"])).astype(int)
                 sm_conf = 0.6 * nd["conf"] + 0.4 * old["conf"]
@@ -80,10 +87,8 @@ class CameraWorker(QThread):
                 used_old.add(best_idx)
             else:
                 updated.append(dict(nd))
-                # Fresh detection gets a miss counter
                 self.miss_count[id(nd)] = 0
 
-        # Keep old detections not matched this cycle, for up to MAX_MISSES cycles
         for i, od in enumerate(self.current_dets):
             if i in used_old:
                 continue
@@ -93,6 +98,14 @@ class CameraWorker(QThread):
                 updated.append(od)
 
         self.current_dets = updated
+
+    def _emit_location_if_available(self):
+        if not self.location_manager:
+            return
+        loc = self.location_manager.get_location()
+        if loc and loc.get("lat") is not None and loc.get("lon") is not None:
+            self.last_location = loc
+            self.location_ready.emit(self.cam_id, float(loc["lat"]), float(loc["lon"]))
 
     def run(self):
         self.frame_ready.emit(self.cam_id, None, "Connecting...")
@@ -109,6 +122,10 @@ class CameraWorker(QThread):
             return
 
         self.frame_ready.emit(self.cam_id, None, "Connected")
+
+        # NEW: fetch GPS once on connect
+        self._emit_location_if_available()
+
         fail_since = None
 
         while self.running:
@@ -132,7 +149,6 @@ class CameraWorker(QThread):
             fail_since = None
             status = "Clean"
 
-            # Inference runs at intervals and updates the persisted state
             if time.time() - self.last_infer_time >= self.infer_interval:
                 self.last_infer_time = time.time()
 
@@ -147,7 +163,6 @@ class CameraWorker(QThread):
 
                 self._merge_detections(new_dets)
 
-            # Draw whatever is currently known — every frame, not just inference frames
             if self.current_dets:
                 status = f"Garbage detected ({len(self.current_dets)})"
                 for d in self.current_dets:
@@ -155,10 +170,32 @@ class CameraWorker(QThread):
                     cv2.rectangle(frame, (int(x1), int(y1)),
                                   (int(x2), int(y2)), (0, 0, 255), 2)
                     cv2.putText(frame, f"{d['cls']} {d['conf']:.2f}",
-                                (int(x1), max(int(y1) - 5, 12)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                                (int(x1), max(int(y1) - 8, 18)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 2)
             else:
                 status = "Clean"
+
+            # ---- Evidence saving (debounced) ----
+            current_state = "Garbage" if self.current_dets else "Clean"
+            now_save = time.time()
+            if (
+                current_state == "Garbage"
+                and self.last_state == "Clean"
+                and now_save - self.last_save_time >= self.MIN_SAVE_INTERVAL
+            ):
+                try:
+                    # NEW: refresh GPS before saving
+                    self._emit_location_if_available()
+                    loc = self.last_location
+                    record = self.evidence_manager.save(
+                        frame, self.cam_id, self.current_dets, location=loc
+                    )
+                    self.last_save_time = now_save
+                    self.evidence_saved.emit(self.cam_id, record)
+                except Exception as e:
+                    print(f"[cam{self.cam_id}] evidence save failed: {e}")
+
+            self.last_state = current_state
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             self.frame_ready.emit(self.cam_id, rgb, status)
