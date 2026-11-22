@@ -1,8 +1,9 @@
 import os
 import json
 import time
-import cv2
+import cv2, datetime
 import numpy as np
+from collections import Counter, defaultdict
 
 EVIDENCE_DIR = "evidence"
 INDEX_PATH = os.path.join(EVIDENCE_DIR, "index.json")
@@ -106,3 +107,63 @@ class EvidenceManager:
                     pass
         self.index = []
         self._save_index()
+
+    def compute_stats(self, days=None, cam_id=None):
+        """
+        Returns a dict of pre-aggregated stats.
+        days: None = all time, or an int (last N days)
+        cam_id: None = all cameras, or int
+        """
+        records = self.index
+    
+        if days is not None:
+            cutoff = time.time() - days * 86400
+            records = [r for r in records if r.get("timestamp", 0) >= cutoff]
+    
+        if cam_id is not None:
+            records = [r for r in records if r.get("cam_id") == cam_id]
+    
+        total = len(records)
+    
+        # Today's count
+        today_start = datetime.datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp()
+        today_count = sum(1 for r in records if r.get("timestamp", 0) >= today_start)
+    
+        # Per-camera counts
+        per_cam = Counter(r.get("cam_id", -1) for r in records)
+    
+        # Class distribution (aggregate the "classes" dict of each record)
+        class_counter = Counter()
+        for r in records:
+            cls_val = r.get("classes", {})
+            if isinstance(cls_val, dict):
+                for k, v in cls_val.items():
+                    class_counter[k] += v
+            elif isinstance(cls_val, (list, tuple, set)):
+                for k in cls_val:
+                    class_counter[k] += 1
+    
+        # Per-day counts (last 7 days by default for the timeline)
+        per_day = defaultdict(int)
+        for r in records:
+            ts = r.get("timestamp", 0)
+            day = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            per_day[day] += 1
+    
+        # Most common class
+        top_class = class_counter.most_common(1)[0][0] if class_counter else "—"
+    
+        # Busiest camera
+        busiest_cam = per_cam.most_common(1)[0][0] if per_cam else "—"
+    
+        return {
+            "total": total,
+            "today": today_count,
+            "per_cam": dict(per_cam),
+            "class_dist": dict(class_counter),
+            "per_day": dict(sorted(per_day.items())),
+            "top_class": top_class,
+            "busiest_cam": busiest_cam,
+            "num_records": len(records),
+        }

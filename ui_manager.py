@@ -2,6 +2,8 @@ from collections import Counter
 import webbrowser
 import time
 
+from stats_page import StatsPage
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QLabel, QPushButton, QInputDialog,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QStackedWidget, QScrollArea,
@@ -219,10 +221,10 @@ class MainWindow(QMainWindow):
         self.last_frames = {}
         self.config = self.load_config()
 
-        # NEW: live location state
-        self.location_labels = {}     # cam_id -> QLabel (text)
-        self.map_buttons = {}         # cam_id -> QPushButton
-        self.camera_locations = {}    # cam_id -> (lat, lon)
+        # Live location state
+        self.location_labels = {}
+        self.map_buttons = {}
+        self.camera_locations = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -230,6 +232,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # ---- Sidebar ----
         sidebar = QFrame()
         sidebar.setFixedWidth(180)
         sidebar.setStyleSheet(
@@ -246,7 +249,8 @@ class MainWindow(QMainWindow):
 
         self.btn_live = QPushButton("Live Cameras")
         self.btn_history = QPushButton("History")
-        for b in (self.btn_live, self.btn_history):
+        self.btn_stats = QPushButton("Statistics")
+        for b in (self.btn_live, self.btn_history, self.btn_stats):
             b.setCheckable(True)
             b.setStyleSheet("""
                 QPushButton {
@@ -260,11 +264,14 @@ class MainWindow(QMainWindow):
         self.btn_live.setChecked(True)
         self.btn_live.clicked.connect(lambda: self.switch_page(0))
         self.btn_history.clicked.connect(lambda: self.switch_page(1))
+        self.btn_stats.clicked.connect(lambda: self.switch_page(2))
         side_layout.addWidget(self.btn_live)
         side_layout.addWidget(self.btn_history)
+        side_layout.addWidget(self.btn_stats)
         side_layout.addStretch()
         root.addWidget(sidebar)
 
+        # ---- Stacked pages ----
         self.stack = QStackedWidget()
         root.addWidget(self.stack, 1)
 
@@ -274,6 +281,10 @@ class MainWindow(QMainWindow):
         self.history_page = HistoryPage(self.evidence_manager)
         self.stack.addWidget(self.history_page)
 
+        self.stats_page = StatsPage(self.evidence_manager)
+        self.stack.addWidget(self.stats_page)
+
+        # Auto-reconnect saved cameras
         for cid_str, cfg in self.config.items():
             cid = int(cid_str)
             if cfg.get("ip") and cfg.get("port"):
@@ -304,7 +315,6 @@ class MainWindow(QMainWindow):
             vbox.setContentsMargins(0, 0, 0, 0)
             vbox.setSpacing(2)
 
-            # ---- NEW: location row (label + map button) ----
             loc_row = QWidget()
             loc_row.setStyleSheet("background: #1a1a1a; border-radius: 3px;")
             lr = QHBoxLayout(loc_row)
@@ -349,8 +359,11 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(idx)
         self.btn_live.setChecked(idx == 0)
         self.btn_history.setChecked(idx == 1)
+        self.btn_stats.setChecked(idx == 2)
         if idx == 1:
             self.history_page.reload()
+        elif idx == 2:
+            self.stats_page.refresh()
 
     def load_config(self):
         if os.path.exists(CONFIG_PATH):
@@ -392,7 +405,7 @@ class MainWindow(QMainWindow):
         worker.frame_ready.connect(self.update_screen)
         worker.reset_screen.connect(self.on_reset_screen)
         worker.evidence_saved.connect(self.on_evidence_saved)
-        worker.location_ready.connect(self.on_location_ready)   # NEW
+        worker.location_ready.connect(self.on_location_ready)
         worker.start()
         self.workers[cam_id] = worker
         self.screens[cam_id].setText("Connecting...")
@@ -419,6 +432,8 @@ class MainWindow(QMainWindow):
     def on_evidence_saved(self, cam_id, record):
         if self.stack.currentIndex() == 1:
             self.history_page.reload()
+        elif self.stack.currentIndex() == 2:
+            self.stats_page.refresh()
 
     def on_reset_screen(self, cam_id, reason):
         if cam_id in self.workers:

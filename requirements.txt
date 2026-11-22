@@ -18,3 +18,5 @@ PyYAML>=6.0
 
 # Progress bar (training process)
 tqdm>=4.65.0
+
+matplotlib>=3.7.0
