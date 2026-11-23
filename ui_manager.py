@@ -7,9 +7,9 @@ from stats_page import StatsPage
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QLabel, QPushButton, QInputDialog,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QStackedWidget, QScrollArea,
-    QFrame
+    QFrame, QGraphicsDropShadowEffect
 )
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QColor
 from PyQt6.QtCore import Qt
 from camera_worker import CameraWorker
 from detector_engine import GarbageDetector
@@ -20,14 +20,56 @@ import json, os
 
 CONFIG_PATH = "configs/cameras.json"
 
+# Shared with Statistics — visual system only
+PALETTE = {
+    "bg": "#0c1118",
+    "surface": "#121925",
+    "card": "#161e2b",
+    "card_alt": "#1a2433",
+    "stroke": "#2a3648",
+    "text": "#e8eef7",
+    "muted": "#8b9bb0",
+    "dim": "#5d6d82",
+    "accent": "#3ee0a2",
+    "accent_2": "#5eb8ff",
+}
+CAM_COLORS = ["#5eb8ff", "#3ee0a2", "#f6c177", "#ff8b7b"]
+CLASS_COLORS = [
+    "#ff8b7b", "#c4a7e7", "#5eb8ff", "#3ee0a2",
+    "#f6c177", "#9ccfd8", "#ea9a97", "#7aa2f7", "#d4e157",
+]
+
+
+def _hex(c):
+    c = c.lstrip("#")
+    return tuple(int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def _rgba(c, a):
+    r, g, b = (int(round(x * 255)) for x in _hex(c))
+    return f"rgba({r}, {g}, {b}, {a})"
+
+
+def _chip(text, color):
+    lab = QLabel(text)
+    lab.setStyleSheet(
+        f"color: {color}; background: {_rgba(color, 0.14)}; "
+        f"border: 1px solid {_rgba(color, 0.35)}; border-radius: 8px; "
+        f"padding: 4px 9px; font-size: 11px; font-weight: 600;"
+    )
+    return lab
+
 
 class CameraScreen(QLabel):
     def __init__(self):
         super().__init__("+")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet(
-            "background: #222; color: #888; font-size: 36px; "
-            "border: 2px dashed #555;"
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f"stop:0 #0d1520, stop:1 #111b28);"
+            f"color: {PALETTE['dim']}; font-size: 40px; font-weight: 300;"
+            f"border: 2px dashed {PALETTE['stroke']};"
+            f"border-radius: 14px;"
         )
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setMinimumSize(80, 60)
@@ -55,51 +97,51 @@ class CameraScreen(QLabel):
 class HistoryCard(QFrame):
     def __init__(self, record, image_path):
         super().__init__()
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            "QFrame { background: #2a2a2a; border: 1px solid #444; border-radius: 6px; }"
-        )
-        self.setFixedHeight(160)
+        self.setObjectName("HistoryCard")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setMinimumHeight(168)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 12, 16, 12)
+        layout.setSpacing(16)
 
         thumb = QLabel()
-        thumb.setFixedSize(200, 140)
-        thumb.setStyleSheet("background: #111; border: 1px solid #333;")
+        thumb.setObjectName("HistThumb")
+        thumb.setFixedSize(220, 144)
+        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pix = QPixmap(image_path)
         if not pix.isNull():
             thumb.setPixmap(pix.scaled(
-                200, 140,
+                220, 144,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation))
-        layout.addWidget(thumb)
+        layout.addWidget(thumb, 0, Qt.AlignmentFlag.AlignTop)
 
         info = QVBoxLayout()
-        info.setSpacing(4)
+        info.setSpacing(8)
+        info.setContentsMargins(0, 2, 0, 2)
 
         ts_lbl = QLabel(record.get("timestamp_str", "Unknown time"))
-        ts_lbl.setStyleSheet("color: #4fc3f7; font-size: 14px; font-weight: bold;")
+        ts_lbl.setObjectName("HistTime")
         info.addWidget(ts_lbl)
 
-        cam_lbl = QLabel(f"Camera {int(record.get('cam_id', 0)) + 1}")
-        cam_lbl.setStyleSheet("color: #bbb; font-size: 12px;")
-        info.addWidget(cam_lbl)
+        try:
+            cam_id = int(record.get("cam_id", 0))
+        except (TypeError, ValueError):
+            cam_id = 0
+        cam_color = CAM_COLORS[cam_id % 4]
 
         classes_val = record.get("classes", {})
+        class_items = []
         if isinstance(classes_val, dict):
+            class_items = list(classes_val.items())
             classes_str = ", ".join(f"{k} ×{v}" for k, v in classes_val.items())
         elif isinstance(classes_val, (list, tuple, set)):
             counts = Counter(classes_val)
+            class_items = list(counts.items())
             classes_str = ", ".join(f"{k} ×{v}" for k, v in counts.items())
         else:
             classes_str = "Unknown"
-
-        cls_lbl = QLabel(f"Detected: {classes_str}")
-        cls_lbl.setStyleSheet("color: #ddd; font-size: 12px;")
-        cls_lbl.setWordWrap(True)
-        info.addWidget(cls_lbl)
 
         try:
             num_obj = int(record.get("num_objects", 0))
@@ -110,9 +152,31 @@ class HistoryCard(QFrame):
         except (TypeError, ValueError):
             max_conf = 0.0
 
-        conf_lbl = QLabel(f"Objects: {num_obj}  |  Max conf: {max_conf:.2f}")
-        conf_lbl.setStyleSheet("color: #999; font-size: 11px;")
-        info.addWidget(conf_lbl)
+        meta = QHBoxLayout()
+        meta.setSpacing(8)
+        meta.addWidget(_chip(f"Camera {cam_id + 1}", cam_color))
+        meta.addWidget(_chip(f"{num_obj} object{'s' if num_obj != 1 else ''}", PALETTE["accent_2"]))
+        meta.addWidget(_chip(f"Max conf {max_conf:.2f}", PALETTE["accent"]))
+        meta.addStretch()
+        info.addLayout(meta)
+
+        detected_lbl = QLabel("DETECTED")
+        detected_lbl.setObjectName("HistKicker")
+        info.addWidget(detected_lbl)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        if class_items:
+            for i, (name, count) in enumerate(class_items):
+                color = CLASS_COLORS[i % len(CLASS_COLORS)]
+                chips.addWidget(_chip(f"{name}  ×{count}", color))
+        else:
+            fallback = QLabel(f"Detected: {classes_str}")
+            fallback.setObjectName("HistBody")
+            fallback.setWordWrap(True)
+            chips.addWidget(fallback)
+        chips.addStretch()
+        info.addLayout(chips)
 
         location_str = record.get("location_str", "Unknown")
         location = record.get("location")
@@ -124,13 +188,18 @@ class HistoryCard(QFrame):
             and location_str not in (None, "", "Unknown")
         )
 
+        loc_row = QHBoxLayout()
+        loc_row.setSpacing(10)
+
         if has_coords:
-            loc_lbl = QLabel(f"Location: {location_str}")
-            loc_lbl.setStyleSheet("color: #81c784; font-size: 11px;")
-            info.addWidget(loc_lbl)
+            loc_lbl = QLabel(f"Location  ·  {location_str}")
+            loc_lbl.setObjectName("HistLocOn")
+            loc_row.addWidget(loc_lbl, 1)
 
             btn = QPushButton("View on Map")
-            btn.setFixedHeight(24)
+            btn.setObjectName("MapBtn")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(28)
             try:
                 lat = float(location["lat"])
                 lon = float(location["lon"])
@@ -141,44 +210,74 @@ class HistoryCard(QFrame):
                 )
             except (TypeError, ValueError):
                 btn.setEnabled(False)
-            info.addWidget(btn)
+            loc_row.addWidget(btn, 0)
         else:
-            loc_lbl = QLabel(f"Location: {location_str if location_str else 'Unknown'}")
-            loc_lbl.setStyleSheet("color: #777; font-size: 11px;")
-            info.addWidget(loc_lbl)
+            loc_lbl = QLabel(
+                f"Location  ·  {location_str if location_str else 'Unknown'}"
+            )
+            loc_lbl.setObjectName("HistLocOff")
+            loc_row.addWidget(loc_lbl, 1)
 
+        info.addLayout(loc_row)
         info.addStretch()
         layout.addLayout(info, 1)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.setGraphicsEffect(shadow)
 
 
 class HistoryPage(QWidget):
     def __init__(self, evidence_manager: EvidenceManager):
         super().__init__()
         self.evidence_manager = evidence_manager
+        self.setObjectName("HistoryRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(self._qss())
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(16)
 
         header = QHBoxLayout()
+        header.setSpacing(16)
+
+        titles = QVBoxLayout()
+        titles.setSpacing(4)
+        eyebrow = QLabel("E-SAFAI  ·  EVIDENCE")
+        eyebrow.setObjectName("Eyebrow")
+        titles.addWidget(eyebrow)
+
         title = QLabel("Detection History")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #fff;")
-        header.addWidget(title)
-        header.addStretch()
+        title.setObjectName("PageTitle")
+        titles.addWidget(title)
 
-        refresh_btn = QPushButton("Refresh")
+        self.meta_label = QLabel("Stored detections from connected cameras")
+        self.meta_label.setObjectName("PageMeta")
+        titles.addWidget(self.meta_label)
+        header.addLayout(titles, 1)
+
+        refresh_col = QVBoxLayout()
+        refresh_col.addStretch()
+        refresh_btn = QPushButton("  Refresh")
+        refresh_btn.setObjectName("RefreshBtn")
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_btn.clicked.connect(self.reload)
-        header.addWidget(refresh_btn)
-
+        refresh_btn.setMinimumHeight(34)
+        refresh_col.addWidget(refresh_btn)
+        header.addLayout(refresh_col, 0)
         layout.addLayout(header)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("QScrollArea { border: none; background: #1e1e1e; }")
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.container = QWidget()
-        self.container.setStyleSheet("background: #1e1e1e;")
+        self.container.setObjectName("HistoryList")
         self.vbox = QVBoxLayout(self.container)
-        self.vbox.setSpacing(8)
-        self.vbox.setContentsMargins(4, 4, 4, 4)
+        self.vbox.setSpacing(12)
+        self.vbox.setContentsMargins(2, 2, 10, 8)
         self.vbox.addStretch()
         self.scroll.setWidget(self.container)
 
@@ -194,17 +293,154 @@ class HistoryPage(QWidget):
 
         records = self.evidence_manager.get_history()
         if not records:
-            empty = QLabel("No detection records yet.")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setStyleSheet("color: #888; font-size: 14px; padding: 40px;")
+            self.meta_label.setText("No stored detections yet")
+            empty = QFrame()
+            empty.setObjectName("EmptyState")
+            el = QVBoxLayout(empty)
+            el.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon = QLabel("◌")
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon.setStyleSheet("color: #5d6d82; font-size: 28px;")
+            msg = QLabel("No detection records yet")
+            msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            msg.setObjectName("EmptyTitle")
+            hint = QLabel("New evidence cards will appear here after garbage is detected.")
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setObjectName("PageMeta")
+            el.addWidget(icon)
+            el.addWidget(msg)
+            el.addWidget(hint)
             self.vbox.insertWidget(0, empty)
             return
+
+        n = len(records)
+        noun = "detection" if n == 1 else "detections"
+        self.meta_label.setText(f"{n} stored {noun}  ·  newest first")
 
         for rec in records:
             path = self.evidence_manager.get_image_path(rec)
             if os.path.exists(path):
                 card = HistoryCard(rec, path)
                 self.vbox.insertWidget(self.vbox.count() - 1, card)
+
+    @staticmethod
+    def _qss():
+        return f"""
+            QWidget#HistoryRoot {{
+                background: {PALETTE["bg"]};
+                color: {PALETTE["text"]};
+                font-family: "Segoe UI", "Inter", "Noto Sans", sans-serif;
+            }}
+            QWidget#HistoryList {{
+                background: {PALETTE["bg"]};
+            }}
+            QLabel#Eyebrow {{
+                color: {PALETTE["accent"]};
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 2.4px;
+            }}
+            QLabel#PageTitle {{
+                color: {PALETTE["text"]};
+                font-size: 26px;
+                font-weight: 800;
+                letter-spacing: -0.4px;
+            }}
+            QLabel#PageMeta {{
+                color: {PALETTE["muted"]};
+                font-size: 12px;
+            }}
+            QLabel#HistTime {{
+                color: {PALETTE["accent_2"]};
+                font-size: 16px;
+                font-weight: 800;
+                letter-spacing: -0.2px;
+            }}
+            QLabel#HistKicker {{
+                color: {PALETTE["dim"]};
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.4px;
+            }}
+            QLabel#HistBody {{
+                color: {PALETTE["text"]};
+                font-size: 12px;
+            }}
+            QLabel#HistLocOn {{
+                color: {PALETTE["accent"]};
+                font-size: 12px;
+            }}
+            QLabel#HistLocOff {{
+                color: {PALETTE["dim"]};
+                font-size: 12px;
+            }}
+            QLabel#EmptyTitle {{
+                color: {PALETTE["text"]};
+                font-size: 15px;
+                font-weight: 700;
+            }}
+            QLabel#HistThumb {{
+                background: {PALETTE["surface"]};
+                border: 1px solid {PALETTE["stroke"]};
+                border-radius: 12px;
+            }}
+            QFrame#HistoryCard {{
+                background: {PALETTE["card"]};
+                border: 1px solid {PALETTE["stroke"]};
+                border-radius: 16px;
+            }}
+            QFrame#EmptyState {{
+                background: {PALETTE["card"]};
+                border: 1px dashed {PALETTE["stroke"]};
+                border-radius: 16px;
+                min-height: 220px;
+            }}
+            QPushButton#RefreshBtn {{
+                background: {PALETTE["accent"]};
+                color: #062016;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-weight: 700;
+                font-size: 13px;
+            }}
+            QPushButton#RefreshBtn:hover {{
+                background: #62f0bb;
+            }}
+            QPushButton#RefreshBtn:pressed {{
+                background: #2bc48d;
+            }}
+            QPushButton#MapBtn {{
+                background: {PALETTE["card_alt"]};
+                color: {PALETTE["text"]};
+                border: 1px solid {PALETTE["stroke"]};
+                border-radius: 8px;
+                padding: 4px 12px;
+                font-weight: 600;
+                font-size: 12px;
+            }}
+            QPushButton#MapBtn:hover {{
+                border: 1px solid {PALETTE["accent_2"]};
+                color: {PALETTE["accent_2"]};
+            }}
+            QScrollArea {{
+                border: none;
+                background: {PALETTE["bg"]};
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 4px 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {PALETTE["stroke"]};
+                border-radius: 5px;
+                min-height: 32px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """
 
 
 class MainWindow(QMainWindow):
@@ -234,33 +470,81 @@ class MainWindow(QMainWindow):
 
         # ---- Sidebar ----
         sidebar = QFrame()
-        sidebar.setFixedWidth(180)
+        sidebar.setFixedWidth(200)
         sidebar.setStyleSheet(
-            "QFrame { background: #1a1a1a; border-right: 1px solid #333; }"
+            f"QFrame {{ background: {PALETTE['surface']};"
+            f"  border-right: 1px solid {PALETTE['stroke']}; }}"
         )
         side_layout = QVBoxLayout(sidebar)
-        side_layout.setContentsMargins(12, 16, 12, 16)
-        side_layout.setSpacing(8)
+        side_layout.setContentsMargins(14, 20, 14, 20)
+        side_layout.setSpacing(6)
+
+        # -- Logo area --
+        logo_frame = QFrame()
+        logo_frame.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"border-bottom: 1px solid {PALETTE['stroke']};"
+            f"padding-bottom: 12px; margin-bottom: 6px;"
+        )
+        logo_inner = QVBoxLayout(logo_frame)
+        logo_inner.setContentsMargins(0, 0, 0, 10)
+        logo_inner.setSpacing(2)
+
+        logo_icon = QLabel("🛡️")
+        logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_icon.setStyleSheet("font-size: 28px; background: transparent; border: none;")
+        logo_inner.addWidget(logo_icon)
 
         logo = QLabel("E-Safai")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo.setStyleSheet("color: #fff; font-size: 20px; font-weight: bold; padding: 8px;")
-        side_layout.addWidget(logo)
+        logo.setStyleSheet(
+            f"color: {PALETTE['text']}; font-size: 22px; font-weight: 800;"
+            f"letter-spacing: -0.5px; background: transparent; border: none;"
+        )
+        logo_inner.addWidget(logo)
 
-        self.btn_live = QPushButton("Live Cameras")
-        self.btn_history = QPushButton("History")
-        self.btn_stats = QPushButton("Statistics")
+        logo_sub = QLabel("Smart Surveillance")
+        logo_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_sub.setStyleSheet(
+            f"color: {PALETTE['dim']}; font-size: 10px; font-weight: 600;"
+            f"letter-spacing: 1.8px; text-transform: uppercase;"
+            f"background: transparent; border: none;"
+        )
+        logo_inner.addWidget(logo_sub)
+        side_layout.addWidget(logo_frame)
+
+        side_layout.addSpacing(8)
+
+        nav_label = QLabel("NAVIGATION")
+        nav_label.setStyleSheet(
+            f"color: {PALETTE['dim']}; font-size: 9px; font-weight: 700;"
+            f"letter-spacing: 2px; padding: 4px 8px;"
+        )
+        side_layout.addWidget(nav_label)
+
+        self.btn_live = QPushButton("  📹  Live Cameras")
+        self.btn_history = QPushButton("  📋  History")
+        self.btn_stats = QPushButton("  📊  Statistics")
+        _nav_btn_qss = f"""
+            QPushButton {{
+                text-align: left; padding: 11px 14px; color: {PALETTE['muted']};
+                background: transparent; border: none; border-radius: 10px;
+                font-size: 13px; font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: {_rgba(PALETTE['accent_2'], 0.08)};
+                color: {PALETTE['text']};
+            }}
+            QPushButton:checked {{
+                background: {_rgba(PALETTE['accent_2'], 0.15)};
+                color: {PALETTE['accent_2']};
+                border-left: 3px solid {PALETTE['accent_2']};
+            }}
+        """
         for b in (self.btn_live, self.btn_history, self.btn_stats):
             b.setCheckable(True)
-            b.setStyleSheet("""
-                QPushButton {
-                    text-align: left; padding: 10px 14px; color: #ccc;
-                    background: transparent; border: none; border-radius: 6px;
-                    font-size: 14px;
-                }
-                QPushButton:hover { background: #2a2a2a; }
-                QPushButton:checked { background: #0d47a1; color: #fff; }
-            """)
+            b.setStyleSheet(_nav_btn_qss)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_live.setChecked(True)
         self.btn_live.clicked.connect(lambda: self.switch_page(0))
         self.btn_history.clicked.connect(lambda: self.switch_page(1))
@@ -269,6 +553,14 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.btn_history)
         side_layout.addWidget(self.btn_stats)
         side_layout.addStretch()
+
+        # -- Sidebar footer --
+        ver_label = QLabel("Powered By Sharpen AI")
+        ver_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver_label.setStyleSheet(
+            f"color: {PALETTE['dim']}; font-size: 10px; padding: 8px;"
+        )
+        side_layout.addWidget(ver_label)
         root.addWidget(sidebar)
 
         # ---- Stacked pages ----
@@ -292,66 +584,176 @@ class MainWindow(QMainWindow):
 
     def _build_live_page(self):
         page = QWidget()
+        page.setObjectName("LiveRoot")
+        page.setStyleSheet(f"""
+            QWidget#LiveRoot {{
+                background: {PALETTE['bg']};
+                font-family: "Segoe UI", "Inter", "Noto Sans", sans-serif;
+            }}
+        """)
         root = QVBoxLayout(page)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(14)
 
+        # ── Header ──
+        header = QVBoxLayout()
+        header.setSpacing(3)
+
+        eyebrow = QLabel("E-SAFAI")
+        eyebrow.setStyleSheet(
+            f"color: {PALETTE['accent']}; font-size: 10px; font-weight: 700;"
+            f"letter-spacing: 2.6px;"
+        )
+        header.addWidget(eyebrow)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
         title = QLabel("Live Garbage Detection")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 20px; font-weight: bold; padding: 4px;")
-        root.addWidget(title, 0)
+        title.setStyleSheet(
+            f"color: {PALETTE['text']}; font-size: 24px; font-weight: 800;"
+            f"letter-spacing: -0.4px;"
+        )
+        title_row.addWidget(title)
+        title_row.addStretch()
 
+        # Live indicator dot
+        live_dot = QLabel("●  LIVE")
+        live_dot.setStyleSheet(
+            f"color: {PALETTE['accent']}; font-size: 11px; font-weight: 700;"
+            f"letter-spacing: 1px;"
+            f"background: {_rgba(PALETTE['accent'], 0.12)};"
+            f"border: 1px solid {_rgba(PALETTE['accent'], 0.3)};"
+            f"border-radius: 10px; padding: 4px 12px 4px 8px;"
+        )
+        title_row.addWidget(live_dot)
+        header.addLayout(title_row)
+
+        subtitle = QLabel("Real-time monitoring across all connected camera feeds")
+        subtitle.setStyleSheet(
+            f"color: {PALETTE['muted']}; font-size: 12px;"
+        )
+        header.addWidget(subtitle)
+        root.addLayout(header, 0)
+
+        # ── Thin separator ──
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {PALETTE['stroke']}; border: none;")
+        root.addWidget(sep)
+
+        # ── Camera grid ──
         grid = QGridLayout()
-        grid.setSpacing(8)
+        grid.setSpacing(12)
         root.addLayout(grid, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
 
-        for i in range(4):
-            container = QWidget()
-            vbox = QVBoxLayout(container)
-            vbox.setContentsMargins(0, 0, 0, 0)
-            vbox.setSpacing(2)
+        cam_accent_colors = [PALETTE['accent_2'], PALETTE['accent'], "#f6c177", "#ff8b7b"]
 
-            loc_row = QWidget()
-            loc_row.setStyleSheet("background: #1a1a1a; border-radius: 3px;")
-            lr = QHBoxLayout(loc_row)
-            lr.setContentsMargins(4, 2, 4, 2)
-            lr.setSpacing(4)
+        for i in range(4):
+            accent = cam_accent_colors[i]
+
+            # Outer card container
+            card = QFrame()
+            card.setObjectName(f"CamCard{i}")
+            card.setStyleSheet(f"""
+                QFrame#CamCard{i} {{
+                    background: {PALETTE['card']};
+                    border: 1px solid {PALETTE['stroke']};
+                    border-radius: 16px;
+                }}
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(6)
+
+            # -- Top bar: camera label + location --
+            top_bar = QHBoxLayout()
+            top_bar.setSpacing(8)
+
+            cam_badge = QLabel(f"  CAM {i + 1}")
+            cam_badge.setStyleSheet(
+                f"color: {accent};"
+                f"background: {_rgba(accent, 0.12)};"
+                f"border: 1px solid {_rgba(accent, 0.3)};"
+                f"border-radius: 8px; padding: 3px 10px;"
+                f"font-size: 10px; font-weight: 800; letter-spacing: 1.2px;"
+            )
+            top_bar.addWidget(cam_badge)
 
             loc_label = QLabel("📍 Location: Unknown")
-            loc_label.setStyleSheet("color: #4fc3f7; font-size: 11px;")
-            lr.addWidget(loc_label, 1)
+            loc_label.setStyleSheet(
+                f"color: {PALETTE['dim']}; font-size: 11px; font-weight: 500;"
+            )
+            top_bar.addWidget(loc_label, 1)
 
-            map_btn = QPushButton("View on Map")
-            map_btn.setFixedHeight(20)
+            map_btn = QPushButton("🗺 Map")
+            map_btn.setFixedHeight(24)
+            map_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             map_btn.setStyleSheet(
-                "QPushButton { background: #0d47a1; color: #fff; border: none; "
-                "border-radius: 3px; padding: 1px 6px; font-size: 10px; }"
-                "QPushButton:hover { background: #1565c0; }"
+                f"QPushButton {{ background: {PALETTE['card_alt']};"
+                f"  color: {PALETTE['text']}; border: 1px solid {PALETTE['stroke']};"
+                f"  border-radius: 7px; padding: 2px 10px;"
+                f"  font-size: 10px; font-weight: 600; }}"
+                f"QPushButton:hover {{ border-color: {PALETTE['accent_2']};"
+                f"  color: {PALETTE['accent_2']}; }}"
             )
             map_btn.setVisible(False)
             map_btn.clicked.connect(lambda _, cid=i: self.open_map(cid))
-            lr.addWidget(map_btn, 0)
+            top_bar.addWidget(map_btn, 0)
+            card_layout.addLayout(top_bar)
 
+            # -- Camera screen --
             screen = CameraScreen()
+            screen.setStyleSheet(
+                f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+                f"stop:0 #0d1520, stop:1 #111b28);"
+                f"color: {PALETTE['dim']}; font-size: 40px; font-weight: 300;"
+                f"border: 2px dashed {PALETTE['stroke']};"
+                f"border-radius: 14px;"
+            )
             screen.mousePressEvent = lambda e, cid=i: self.on_screen_clicked(cid)
+            card_layout.addWidget(screen, 1)
+
+            # -- Bottom status bar --
+            bottom_bar = QHBoxLayout()
+            bottom_bar.setSpacing(6)
+
+            status_dot = QLabel("●")
+            status_dot.setFixedWidth(14)
+            status_dot.setStyleSheet(
+                f"color: {PALETTE['dim']}; font-size: 8px;"
+            )
+            bottom_bar.addWidget(status_dot)
 
             status = QLabel("Not connected")
-            status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            status.setStyleSheet("color: #aaa; font-size: 12px;")
+            status.setStyleSheet(
+                f"color: {PALETTE['muted']}; font-size: 11px; font-weight: 500;"
+            )
+            bottom_bar.addWidget(status, 1)
 
-            vbox.addWidget(loc_row, 0)
-            vbox.addWidget(screen, 1)
-            vbox.addWidget(status, 0)
-            grid.addWidget(container, i // 2, i % 2)
+            connect_hint = QLabel("Click to connect ›")
+            connect_hint.setStyleSheet(
+                f"color: {PALETTE['dim']}; font-size: 10px; font-style: italic;"
+            )
+            bottom_bar.addWidget(connect_hint)
+            card_layout.addLayout(bottom_bar)
+
+            grid.addWidget(card, i // 2, i % 2)
 
             self.screens[i] = screen
             self.status_labels[i] = status
             self.location_labels[i] = loc_label
             self.map_buttons[i] = map_btn
+            # Store extra UI refs for status dot and connect hint
+            if not hasattr(self, '_status_dots'):
+                self._status_dots = {}
+                self._connect_hints = {}
+            self._status_dots[i] = status_dot
+            self._connect_hints[i] = connect_hint
 
         return page
 
@@ -408,15 +810,40 @@ class MainWindow(QMainWindow):
         worker.location_ready.connect(self.on_location_ready)
         worker.start()
         self.workers[cam_id] = worker
-        self.screens[cam_id].setText("Connecting...")
+        self.screens[cam_id].setText("⟳")
+        self.screens[cam_id].setStyleSheet(
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f"stop:0 #0d1520, stop:1 #111b28);"
+            f"color: {PALETTE['accent_2']}; font-size: 32px; font-weight: 300;"
+            f"border: 2px solid {_rgba(PALETTE['accent_2'], 0.3)};"
+            f"border-radius: 14px;"
+        )
         self.status_labels[cam_id].setText("Connecting...")
+        self.status_labels[cam_id].setStyleSheet(
+            f"color: {PALETTE['accent_2']}; font-size: 11px; font-weight: 500;"
+        )
         self.location_labels[cam_id].setText("📍 Location: Locating...")
+        self.location_labels[cam_id].setStyleSheet(
+            f"color: {PALETTE['accent_2']}; font-size: 11px; font-weight: 500;"
+        )
         self.map_buttons[cam_id].setVisible(False)
+        if hasattr(self, '_status_dots') and cam_id in self._status_dots:
+            self._status_dots[cam_id].setStyleSheet(
+                f"color: {PALETTE['accent_2']}; font-size: 8px;"
+            )
+        if hasattr(self, '_connect_hints') and cam_id in self._connect_hints:
+            self._connect_hints[cam_id].setText("Establishing connection...")
+            self._connect_hints[cam_id].setStyleSheet(
+                f"color: {PALETTE['accent_2']}; font-size: 10px; font-style: italic;"
+            )
 
     def on_location_ready(self, cam_id, lat, lon):
         self.camera_locations[cam_id] = (lat, lon)
         if cam_id in self.location_labels:
             self.location_labels[cam_id].setText(f"📍 {lat:.5f}, {lon:.5f}")
+            self.location_labels[cam_id].setStyleSheet(
+                f"color: {PALETTE['accent']}; font-size: 11px; font-weight: 500;"
+            )
         if cam_id in self.map_buttons:
             btn = self.map_buttons[cam_id]
             btn.setVisible(True)
@@ -448,21 +875,49 @@ class MainWindow(QMainWindow):
         screen._pixmap = None
         screen.setText("+")
         screen.setStyleSheet(
-            "background: #222; color: #888; font-size: 36px; "
-            "border: 2px dashed #555;")
-        self.status_labels[cam_id].setText(f"Not connected ({reason})")
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f"stop:0 #0d1520, stop:1 #111b28);"
+            f"color: {PALETTE['dim']}; font-size: 40px; font-weight: 300;"
+            f"border: 2px dashed {PALETTE['stroke']};"
+            f"border-radius: 14px;"
+        )
+        self.status_labels[cam_id].setText(f"Disconnected ({reason})")
+        self.status_labels[cam_id].setStyleSheet(
+            f"color: #ff8b7b; font-size: 11px; font-weight: 500;"
+        )
         screen.mousePressEvent = lambda e, cid=cam_id: self.on_screen_clicked(cid)
 
         if cam_id in self.location_labels:
             self.location_labels[cam_id].setText("📍 Location: Unknown")
+            self.location_labels[cam_id].setStyleSheet(
+                f"color: {PALETTE['dim']}; font-size: 11px; font-weight: 500;"
+            )
         if cam_id in self.map_buttons:
             self.map_buttons[cam_id].setVisible(False)
         self.camera_locations.pop(cam_id, None)
+        if hasattr(self, '_status_dots') and cam_id in self._status_dots:
+            self._status_dots[cam_id].setStyleSheet(
+                f"color: #ff8b7b; font-size: 8px;"
+            )
+        if hasattr(self, '_connect_hints') and cam_id in self._connect_hints:
+            self._connect_hints[cam_id].setText("Click to reconnect ›")
+            self._connect_hints[cam_id].setStyleSheet(
+                f"color: {PALETTE['dim']}; font-size: 10px; font-style: italic;"
+            )
 
     def update_screen(self, cam_id, frame, status):
         if cam_id not in self.workers:
             return
         self.status_labels[cam_id].setText(status)
+        self.status_labels[cam_id].setStyleSheet(
+            f"color: {PALETTE['accent']}; font-size: 11px; font-weight: 500;"
+        )
+        if hasattr(self, '_status_dots') and cam_id in self._status_dots:
+            self._status_dots[cam_id].setStyleSheet(
+                f"color: {PALETTE['accent']}; font-size: 8px;"
+            )
+        if hasattr(self, '_connect_hints') and cam_id in self._connect_hints:
+            self._connect_hints[cam_id].setText("")
         if frame is None:
             return
         h, w, ch = frame.shape
@@ -470,6 +925,11 @@ class MainWindow(QMainWindow):
         pix = QPixmap.fromImage(qimg)
         self.last_frames[cam_id] = pix
         self.screens[cam_id].set_frame(pix)
+        # Update screen border when receiving frames
+        self.screens[cam_id].setStyleSheet(
+            f"background: #0a0f17; border: 1px solid {PALETTE['stroke']};"
+            f"border-radius: 14px;"
+        )
 
     def closeEvent(self, event):
         for w in self.workers.values():
