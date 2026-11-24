@@ -59,6 +59,239 @@ def _chip(text, color):
     )
     return lab
 
+# ---- Camera Connection Dialog (PyQt6) ----
+from PyQt6.QtWidgets import (
+    QDialog, QFormLayout, QComboBox, QListView, QLineEdit
+)
+
+
+class CameraDialog(QDialog):
+    """Modern dark-themed dialog for entering camera IP + Port with sample presets."""
+
+    IP_SAMPLES = [
+        "192.168.1.10",
+        "192.168.1.11",
+        "192.168.0.100",
+        "10.0.0.5",
+    ]
+    PORT_SAMPLES = ["8080", "8081", "554", "8554", "9000"]
+
+    def __init__(self, cam_id, current_ip="", current_port="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Camera {cam_id + 1} — Connection Settings")
+        self.setMinimumWidth(420)
+        self.setModal(True)
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {PALETTE['surface']};
+                color: {PALETTE['text']};
+            }}
+            QLabel {{
+                color: {PALETTE['text']};
+                background: transparent;
+            }}
+        """)
+
+        # Main layout
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 22, 24, 20)
+
+        # Header section
+        header_box = QVBoxLayout()
+        header_box.setSpacing(4)
+        title_lbl = QLabel(f"Camera {cam_id + 1} Configuration")
+        title_lbl.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {PALETTE['text']};")
+        header_box.addWidget(title_lbl)
+
+        hint = QLabel("Enter camera's IP address & port, or select a preset.")
+        hint.setStyleSheet(f"font-size: 12px; color: {PALETTE['muted']};")
+        header_box.addWidget(hint)
+        layout.addLayout(header_box)
+
+        # Form layout
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # IP combo box (editable)
+        self.ip_combo = QComboBox()
+        self.ip_combo.setEditable(True)
+        self.ip_combo.setView(QListView())
+        self.ip_combo.addItems(self.IP_SAMPLES)
+        self.ip_combo.setStyleSheet(self._combo_style())
+        ip_line = self.ip_combo.lineEdit()
+        ip_line.setPlaceholderText("e.g. 192.168.1.10")
+        if current_ip:
+            self.ip_combo.setEditText(str(current_ip))
+        else:
+            self.ip_combo.setEditText("")
+
+        ip_label = QLabel("IP Address:")
+        ip_label.setStyleSheet(f"font-weight: 600; font-size: 13px; color: {PALETTE['text']};")
+        form.addRow(ip_label, self.ip_combo)
+
+        # Port combo box (editable)
+        self.port_combo = QComboBox()
+        self.port_combo.setEditable(True)
+        self.port_combo.setView(QListView())
+        self.port_combo.addItems(self.PORT_SAMPLES)
+        self.port_combo.setStyleSheet(self._combo_style())
+        port_line = self.port_combo.lineEdit()
+        port_line.setPlaceholderText("e.g. 8080")
+        if current_port:
+            self.port_combo.setEditText(str(current_port))
+        else:
+            self.port_combo.setEditText("")
+
+        port_label = QLabel("Port:")
+        port_label.setStyleSheet(f"font-weight: 600; font-size: 13px; color: {PALETTE['text']};")
+        form.addRow(port_label, self.port_combo)
+
+        layout.addLayout(form)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {PALETTE['card_alt']};
+                color: {PALETTE['muted']};
+                border: 1px solid {PALETTE['stroke']};
+                border-radius: 8px;
+                padding: 8px 18px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: #24344a;
+                color: {PALETTE['text']};
+                border-color: {PALETTE['dim']};
+            }}
+        """)
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+
+        self.btn_connect = QPushButton("Connect")
+        self.btn_connect.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_connect.setDefault(True)
+        self.btn_connect.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4ff0b0, stop:1 {PALETTE['accent']});
+                color: #062016;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 22px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                background: #62f0bb;
+            }}
+        """)
+        self.btn_connect.clicked.connect(self._on_accept)
+        btn_layout.addWidget(self.btn_connect)
+
+        layout.addLayout(btn_layout)
+
+    @staticmethod
+    def _combo_style():
+        return f"""
+            QComboBox {{
+                background-color: {PALETTE['card_alt']};
+                color: {PALETTE['text']};
+                border: 1px solid {PALETTE['stroke']};
+                border-radius: 8px;
+                padding: 7px 12px;
+                font-size: 13px;
+                font-weight: 500;
+                min-height: 22px;
+            }}
+            QComboBox:hover {{
+                border-color: {PALETTE['accent_2']};
+            }}
+            QComboBox:focus {{
+                border-color: {PALETTE['accent']};
+            }}
+            QComboBox QLineEdit {{
+                color: {PALETTE['text']};
+                background: transparent;
+                border: none;
+                font-size: 13px;
+                font-weight: 500;
+                selection-background-color: #24344a;
+                selection-color: {PALETTE['accent']};
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 28px;
+                border-left: 1px solid {PALETTE['stroke']};
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+                background-color: {PALETTE['card']};
+            }}
+            QComboBox::drop-down:hover {{
+                background-color: #24344a;
+            }}
+            QComboBox::down-arrow {{
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {PALETTE['muted']};
+                width: 0px;
+                height: 0px;
+            }}
+            QComboBox::down-arrow:hover {{
+                border-top-color: {PALETTE['accent']};
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {PALETTE['card']};
+                color: {PALETTE['text']};
+                border: 1px solid {PALETTE['stroke']};
+                border-radius: 8px;
+                padding: 4px;
+                selection-background-color: #24344a;
+                selection-color: {PALETTE['accent']};
+                outline: none;
+            }}
+            QComboBox QAbstractItemView::item {{
+                min-height: 26px;
+                padding: 4px 8px;
+                border-radius: 4px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: {PALETTE['card_alt']};
+                color: {PALETTE['accent_2']};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background-color: #24344a;
+                color: {PALETTE['accent']};
+            }}
+        """
+
+    def _on_accept(self):
+        ip = self.ip_combo.currentText().strip()
+        port = self.port_combo.currentText().strip()
+        if not ip or not port:
+            # Highlight border if missing
+            if not ip:
+                self.ip_combo.setStyleSheet(self._combo_style() + " QComboBox { border: 1px solid #ff8b7b; }")
+            if not port:
+                self.port_combo.setStyleSheet(self._combo_style() + " QComboBox { border: 1px solid #ff8b7b; }")
+            return
+        self.accept()
+
+    def get_values(self):
+        return (
+            self.ip_combo.currentText().strip(),
+            self.port_combo.currentText().strip(),
+        )
 
 class CameraScreen(QLabel):
     def __init__(self):
@@ -245,29 +478,48 @@ class HistoryPage(QWidget):
         header.setSpacing(16)
 
         titles = QVBoxLayout()
-        titles.setSpacing(4)
-        eyebrow = QLabel("E-SAFAI  ·  EVIDENCE")
+        titles.setSpacing(2)
+        titles.setContentsMargins(0, 0, 0, 0)
+
+        eyebrow = QLabel("E-SAFAI")
         eyebrow.setObjectName("Eyebrow")
+        eyebrow.setStyleSheet(
+            """
+            QLabel#Eyebrow {
+                font-family: 'Segoe UI', 'Poppins', 'Arial', sans-serif;
+                font-size: 22px;
+                font-weight: 800;
+                letter-spacing: 3px;
+                color: #3ee0a2;
+                padding: 0px;
+                margin: 0px;
+                background: transparent;
+            }
+            """
+        )
         titles.addWidget(eyebrow)
 
         title = QLabel("Detection History")
         title.setObjectName("PageTitle")
+        title.setStyleSheet(
+            """
+            QLabel#PageTitle {
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: 13px;
+                font-weight: 500;
+                letter-spacing: 1.2px;
+                color: #FFFFFF;
+                padding: 0px;
+                margin: 0px;
+                background: transparent;
+            }
+            """
+        )
         titles.addWidget(title)
-
         self.meta_label = QLabel("Stored detections from connected cameras")
         self.meta_label.setObjectName("PageMeta")
         titles.addWidget(self.meta_label)
         header.addLayout(titles, 1)
-
-        refresh_col = QVBoxLayout()
-        refresh_col.addStretch()
-        refresh_btn = QPushButton("  Refresh")
-        refresh_btn.setObjectName("RefreshBtn")
-        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_btn.clicked.connect(self.reload)
-        refresh_btn.setMinimumHeight(34)
-        refresh_col.addWidget(refresh_btn)
-        header.addLayout(refresh_col, 0)
         layout.addLayout(header)
 
         self.scroll = QScrollArea()
@@ -315,7 +567,7 @@ class HistoryPage(QWidget):
 
         n = len(records)
         noun = "detection" if n == 1 else "detections"
-        self.meta_label.setText(f"{n} stored {noun}  ·  newest first")
+        self.meta_label.setText(f"{n} stored {noun}")
 
         for rec in records:
             path = self.evidence_manager.get_image_path(rec)
@@ -395,21 +647,6 @@ class HistoryPage(QWidget):
                 border-radius: 16px;
                 min-height: 220px;
             }}
-            QPushButton#RefreshBtn {{
-                background: {PALETTE["accent"]};
-                color: #062016;
-                border: none;
-                border-radius: 8px;
-                padding: 8px 16px;
-                font-weight: 700;
-                font-size: 13px;
-            }}
-            QPushButton#RefreshBtn:hover {{
-                background: #62f0bb;
-            }}
-            QPushButton#RefreshBtn:pressed {{
-                background: #2bc48d;
-            }}
             QPushButton#MapBtn {{
                 background: {PALETTE["card_alt"]};
                 color: {PALETTE["text"]};
@@ -476,91 +713,146 @@ class MainWindow(QMainWindow):
             f"  border-right: 1px solid {PALETTE['stroke']}; }}"
         )
         side_layout = QVBoxLayout(sidebar)
-        side_layout.setContentsMargins(14, 20, 14, 20)
-        side_layout.setSpacing(6)
+        side_layout.setContentsMargins(14, 22, 14, 20)
+        side_layout.setSpacing(4)
 
         # -- Logo area --
         logo_frame = QFrame()
         logo_frame.setStyleSheet(
             f"background: transparent; border: none;"
             f"border-bottom: 1px solid {PALETTE['stroke']};"
-            f"padding-bottom: 12px; margin-bottom: 6px;"
+            f"padding-bottom: 14px; margin-bottom: 8px;"
         )
         logo_inner = QVBoxLayout(logo_frame)
-        logo_inner.setContentsMargins(0, 0, 0, 10)
-        logo_inner.setSpacing(2)
+        logo_inner.setContentsMargins(0, 0, 0, 12)
+        logo_inner.setSpacing(6)
 
-        logo_icon = QLabel("🛡️")
+        logo_icon = QLabel("♻️")
         logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_icon.setStyleSheet("font-size: 28px; background: transparent; border: none;")
+        logo_icon.setStyleSheet("font-size: 30px; background: transparent; border: none;")
         logo_inner.addWidget(logo_icon)
 
         logo = QLabel("E-Safai")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo.setStyleSheet(
-            f"color: {PALETTE['text']}; font-size: 22px; font-weight: 800;"
-            f"letter-spacing: -0.5px; background: transparent; border: none;"
+            f"color: {PALETTE['text']}; font-size: 21px; font-weight: 800;"
+            f"letter-spacing: -0.3px; background: transparent; border: none;"
         )
         logo_inner.addWidget(logo)
 
-        logo_sub = QLabel("Smart Surveillance")
+        logo_sub = QLabel("WASTE MANAGEMENT")
         logo_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_sub.setStyleSheet(
-            f"color: {PALETTE['dim']}; font-size: 10px; font-weight: 600;"
-            f"letter-spacing: 1.8px; text-transform: uppercase;"
+            f"color: {PALETTE['dim']}; font-size: 9px; font-weight: 700;"
+            f"letter-spacing: 2.2px;"
             f"background: transparent; border: none;"
         )
         logo_inner.addWidget(logo_sub)
         side_layout.addWidget(logo_frame)
 
-        side_layout.addSpacing(8)
+        side_layout.addSpacing(10)
 
-        nav_label = QLabel("NAVIGATION")
+        nav_label = QLabel("MENU")
         nav_label.setStyleSheet(
             f"color: {PALETTE['dim']}; font-size: 9px; font-weight: 700;"
-            f"letter-spacing: 2px; padding: 4px 8px;"
+            f"letter-spacing: 2px; padding: 0px 8px 6px 8px;"
+            f"background: transparent; border: none;"
         )
         side_layout.addWidget(nav_label)
 
-        self.btn_live = QPushButton("  📹  Live Cameras")
-        self.btn_history = QPushButton("  📋  History")
-        self.btn_stats = QPushButton("  📊  Statistics")
+        self.btn_live = QPushButton("   📷   Live Cameras")
+        self.btn_history = QPushButton("   🗂️   History")
+        self.btn_stats = QPushButton("   📈   Statistics")
+
         _nav_btn_qss = f"""
             QPushButton {{
-                text-align: left; padding: 11px 14px; color: {PALETTE['muted']};
-                background: transparent; border: none; border-radius: 10px;
-                font-size: 13px; font-weight: 600;
+                text-align: left;
+                padding: 11px 14px;
+                color: {PALETTE['muted']};
+                background: transparent;
+                border: none;
+                border-radius: 9px;
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 0.2px;
             }}
             QPushButton:hover {{
                 background: {_rgba(PALETTE['accent_2'], 0.08)};
                 color: {PALETTE['text']};
             }}
             QPushButton:checked {{
-                background: {_rgba(PALETTE['accent_2'], 0.15)};
+                background: {_rgba(PALETTE['accent_2'], 0.14)};
                 color: {PALETTE['accent_2']};
                 border-left: 3px solid {PALETTE['accent_2']};
+                padding-left: 11px;
             }}
         """
+
         for b in (self.btn_live, self.btn_history, self.btn_stats):
             b.setCheckable(True)
             b.setStyleSheet(_nav_btn_qss)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+
         self.btn_live.setChecked(True)
         self.btn_live.clicked.connect(lambda: self.switch_page(0))
         self.btn_history.clicked.connect(lambda: self.switch_page(1))
         self.btn_stats.clicked.connect(lambda: self.switch_page(2))
+
         side_layout.addWidget(self.btn_live)
         side_layout.addWidget(self.btn_history)
         side_layout.addWidget(self.btn_stats)
         side_layout.addStretch()
 
         # -- Sidebar footer --
-        ver_label = QLabel("Powered By Sharpen AI")
+        footer_frame = QFrame()
+        footer_frame.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"border-top: 1px solid {PALETTE['stroke']};"
+            f"padding-top: 14px;"
+        )
+        footer_inner = QVBoxLayout(footer_frame)
+        footer_inner.setContentsMargins(0, 12, 0, 0)
+        footer_inner.setSpacing(8)
+
+        # Logo image above the footer text
+        LOGO_SIZE = 110   # <-- change this single value to resize (try 64, 80, 96, 110)
+
+        brand_logo = QLabel()
+        brand_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_logo.setFixedSize(LOGO_SIZE, LOGO_SIZE)
+        brand_logo.setStyleSheet("background: transparent; border: none;")
+
+        # >>> ADD YOUR IMAGE PATH BELOW <<<
+        brand_logo_pixmap = QPixmap("assets/sharpen_Ai.JPEG")   # <-- change this path
+        if not brand_logo_pixmap.isNull():
+            brand_logo.setPixmap(
+                brand_logo_pixmap.scaled(
+                    LOGO_SIZE, LOGO_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    )
+        else:
+    # graceful fallback if image is missing
+            brand_logo.setText("⚡")
+            brand_logo.setStyleSheet(
+        f"background: transparent; border: none; font-size: {int(LOGO_SIZE * 0.5)}px;"
+    )
+        footer_inner.addWidget(brand_logo, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        ver_label = QLabel("POWERED BY\nSHARPEN AI")
         ver_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ver_label.setStyleSheet(
-            f"color: {PALETTE['dim']}; font-size: 10px; padding: 8px;"
+            f"color: {PALETTE['dim']};"
+            f"font-size: 9px;"
+            f"font-weight: 700;"
+            f"letter-spacing: 1.6px;"
+            f"line-height: 1.6;"
+            f"background: transparent; border: none;"
         )
-        side_layout.addWidget(ver_label)
+        footer_inner.addWidget(ver_label)
+
+        side_layout.addWidget(footer_frame)
         root.addWidget(sidebar)
 
         # ---- Stacked pages ----
@@ -597,37 +889,37 @@ class MainWindow(QMainWindow):
 
         # ── Header ──
         header = QVBoxLayout()
-        header.setSpacing(3)
+        header.setSpacing(2)
+        header.setContentsMargins(0, 0, 0, 0)
 
         eyebrow = QLabel("E-SAFAI")
+        eyebrow.setObjectName("Eyebrow")
         eyebrow.setStyleSheet(
-            f"color: {PALETTE['accent']}; font-size: 10px; font-weight: 700;"
-            f"letter-spacing: 2.6px;"
+            f"font-family: 'Segoe UI', 'Poppins', 'Arial', sans-serif;"
+            f"color: {PALETTE['accent']};"
+            f"font-size: 22px;"
+            f"font-weight: 800;"
+            f"letter-spacing: 3px;"
+            f"padding: 0px; margin: 0px; background: transparent;"
         )
         header.addWidget(eyebrow)
 
         title_row = QHBoxLayout()
         title_row.setSpacing(12)
         title = QLabel("Live Garbage Detection")
+        title.setObjectName("PageTitle")
         title.setStyleSheet(
-            f"color: {PALETTE['text']}; font-size: 24px; font-weight: 800;"
-            f"letter-spacing: -0.4px;"
+            f"font-family: 'Segoe UI', 'Arial', sans-serif;"
+            f"color: {PALETTE['text']};"
+            f"font-size: 13px;"
+            f"font-weight: 500;"
+            f"letter-spacing: 1.2px;"
+            f"padding: 0px; margin: 0px; background: transparent;"
         )
         title_row.addWidget(title)
         title_row.addStretch()
 
-        # Live indicator dot
-        live_dot = QLabel("●  LIVE")
-        live_dot.setStyleSheet(
-            f"color: {PALETTE['accent']}; font-size: 11px; font-weight: 700;"
-            f"letter-spacing: 1px;"
-            f"background: {_rgba(PALETTE['accent'], 0.12)};"
-            f"border: 1px solid {_rgba(PALETTE['accent'], 0.3)};"
-            f"border-radius: 10px; padding: 4px 12px 4px 8px;"
-        )
-        title_row.addWidget(live_dot)
         header.addLayout(title_row)
-
         subtitle = QLabel("Real-time monitoring across all connected camera feeds")
         subtitle.setStyleSheet(
             f"color: {PALETTE['muted']}; font-size: 12px;"
@@ -781,13 +1073,20 @@ class MainWindow(QMainWindow):
     def on_screen_clicked(self, cam_id):
         if cam_id in self.workers:
             return
-        text, ok = QInputDialog.getText(
-            self, f"Camera {cam_id + 1}",
-            "Enter IP and Port (e.g., 192.168.1.5:8080):")
-        if not ok or ":" not in text:
+
+        cfg = self.config.get(str(cam_id), {})
+        current_ip = cfg.get("ip", "")
+        current_port = cfg.get("port", "")
+
+        dialog = CameraDialog(cam_id, current_ip=current_ip, current_port=current_port, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        ip, port = text.split(":", 1)
-        self.start_camera(cam_id, ip.strip(), port.strip())
+
+        ip, port = dialog.get_values()
+        if not ip or not port:
+            return
+
+        self.start_camera(cam_id, ip, port)
 
     def start_camera(self, cam_id, ip, port):
         self.config[str(cam_id)] = {"ip": ip, "port": port}
