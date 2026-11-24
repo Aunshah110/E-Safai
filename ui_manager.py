@@ -1016,11 +1016,7 @@ class MainWindow(QMainWindow):
             )
             bottom_bar.addWidget(status, 1)
 
-            connect_hint = QLabel("Click to connect ›")
-            connect_hint.setStyleSheet(
-                f"color: {PALETTE['dim']}; font-size: 10px; font-style: italic;"
-            )
-            bottom_bar.addWidget(connect_hint)
+
             card_layout.addLayout(bottom_bar)
 
             grid.addWidget(card, i // 2, i % 2)
@@ -1035,7 +1031,6 @@ class MainWindow(QMainWindow):
                 self._status_dots = {}
                 self._connect_hints = {}
             self._status_dots[i] = status_dot
-            self._connect_hints[i] = connect_hint
 
         # ── Alert banner (hidden by default, top-right overlay)
         self.alert_banner = QFrame(page)
