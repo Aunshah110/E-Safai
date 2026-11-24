@@ -7,10 +7,12 @@ from stats_page import StatsPage
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QLabel, QPushButton, QInputDialog,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QStackedWidget, QScrollArea,
-    QFrame, QGraphicsDropShadowEffect
+    QFrame, QGraphicsDropShadowEffect, QDialog, QFormLayout, QComboBox,
+    QListView, QLineEdit
 )
-from PyQt6.QtGui import QImage, QPixmap, QColor
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QIcon
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtSvg import QSvgRenderer
 from camera_worker import CameraWorker
 from detector_engine import GarbageDetector
 from evidence_manager import EvidenceManager
@@ -20,7 +22,6 @@ import json, os
 
 CONFIG_PATH = "configs/cameras.json"
 
-# Shared with Statistics — visual system only
 PALETTE = {
     "bg": "#0c1118",
     "surface": "#121925",
@@ -32,6 +33,8 @@ PALETTE = {
     "dim": "#5d6d82",
     "accent": "#3ee0a2",
     "accent_2": "#5eb8ff",
+    "warn": "#f6c177",
+    "danger": "#ff8b7b",
 }
 CAM_COLORS = ["#5eb8ff", "#3ee0a2", "#f6c177", "#ff8b7b"]
 CLASS_COLORS = [
@@ -59,21 +62,87 @@ def _chip(text, color):
     )
     return lab
 
-# ---- Camera Connection Dialog (PyQt6) ----
-from PyQt6.QtWidgets import (
-    QDialog, QFormLayout, QComboBox, QListView, QLineEdit
-)
+
+# ─────────────────────────────────────────────────────────────
+# SVG icon system — Lucide-style, theme-colored
+# ─────────────────────────────────────────────────────────────
+_ICONS = {
+    "map-pin": """
+        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+        <circle cx="12" cy="10" r="3" fill="{color}" stroke="none"/>
+    """,
+    "camera": """
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+        <circle cx="12" cy="13" r="4"/>
+    """,
+    "archive": """
+        <rect x="3" y="3" width="18" height="5" rx="1"/>
+        <path d="M5 8v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/>
+        <path d="M10 12h4"/>
+    """,
+    "bar-chart": """
+        <line x1="12" y1="20" x2="12" y2="10"/>
+        <line x1="18" y1="20" x2="18" y2="4"/>
+        <line x1="6" y1="20" x2="6" y2="16"/>
+    """,
+    "map": """
+        <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/>
+        <line x1="8" y1="2" x2="8" y2="18"/>
+        <line x1="16" y1="6" x2="16" y2="22"/>
+    """,
+    "recycle": """
+        <path d="M7 19H4.815a1.83 1.83 0 0 1-1.57-.881 1.785 1.785 0 0 1-.004-1.784L7.196 9.5"/>
+        <path d="M11 19h8.203a1.83 1.83 0 0 0 1.556-.89 1.784 1.784 0 0 0 0-1.775l-1.226-2.12"/>
+        <path d="M14 16l-3 3 3 3"/>
+        <path d="M8.293 13.596L7.196 9.5 3.1 10.598"/>
+        <path d="M9.344 5.811l.23-.395A1.83 1.83 0 0 1 11.138 4.5h.002a1.83 1.83 0 0 1 1.56.893l1.84 3.176"/>
+        <path d="M13.378 9.633l4.096 1.098 1.097-4.096"/>
+    """,
+    "zap": """
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    """,
+}
 
 
+def _svg_pixmap(name, size=18, color=None, stroke_width=2.0):
+    """Render a Lucide-style icon from the dict above at `size` px in `color`."""
+    if color is None:
+        color = PALETTE["accent_2"]
+    body = _ICONS[name].format(color=color)
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
+        f'fill="none" stroke="{color}" stroke-width="{stroke_width}" '
+        f'stroke-linecap="round" stroke-linejoin="round">{body}</svg>'
+    ).encode("utf-8")
+    renderer = QSvgRenderer(svg)
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    renderer.render(painter)
+    painter.end()
+    return pm
+
+
+def _svg_icon(name, size=18, color=None, stroke_width=2.0):
+    """Same as _svg_pixmap but returns a QIcon, for QPushButton.setIcon()."""
+    return QIcon(_svg_pixmap(name, size, color, stroke_width))
+
+
+def _svg_label(name, size=18, color=None, stroke_width=2.0):
+    """A QLabel preloaded with an SVG icon pixmap."""
+    lab = QLabel()
+    lab.setFixedSize(size, size)
+    lab.setPixmap(_svg_pixmap(name, size, color, stroke_width))
+    lab.setStyleSheet("background: transparent; border: none;")
+    return lab
+
+
+# ─────────────────────────────────────────────────────────────
+# Camera connection dialog
+# ─────────────────────────────────────────────────────────────
 class CameraDialog(QDialog):
-    """Modern dark-themed dialog for entering camera IP + Port with sample presets."""
-
-    IP_SAMPLES = [
-        "192.168.1.10",
-        "192.168.1.11",
-        "192.168.0.100",
-        "10.0.0.5",
-    ]
+    IP_SAMPLES = ["192.168.1.10", "192.168.1.11", "192.168.0.100", "10.0.0.5"]
     PORT_SAMPLES = ["8080", "8081", "554", "8554", "9000"]
 
     def __init__(self, cam_id, current_ip="", current_port="", parent=None):
@@ -83,22 +152,14 @@ class CameraDialog(QDialog):
         self.setModal(True)
 
         self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {PALETTE['surface']};
-                color: {PALETTE['text']};
-            }}
-            QLabel {{
-                color: {PALETTE['text']};
-                background: transparent;
-            }}
+            QDialog {{ background-color: {PALETTE['surface']}; color: {PALETTE['text']}; }}
+            QLabel {{ color: {PALETTE['text']}; background: transparent; }}
         """)
 
-        # Main layout
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
         layout.setContentsMargins(24, 22, 24, 20)
 
-        # Header section
         header_box = QVBoxLayout()
         header_box.setSpacing(4)
         title_lbl = QLabel(f"Camera {cam_id + 1} Configuration")
@@ -110,19 +171,16 @@ class CameraDialog(QDialog):
         header_box.addWidget(hint)
         layout.addLayout(header_box)
 
-        # Form layout
         form = QFormLayout()
         form.setSpacing(12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # IP combo box (editable)
         self.ip_combo = QComboBox()
         self.ip_combo.setEditable(True)
         self.ip_combo.setView(QListView())
         self.ip_combo.addItems(self.IP_SAMPLES)
         self.ip_combo.setStyleSheet(self._combo_style())
-        ip_line = self.ip_combo.lineEdit()
-        ip_line.setPlaceholderText("e.g. 192.168.1.10")
+        self.ip_combo.lineEdit().setPlaceholderText("e.g. 192.168.1.10")
         if current_ip:
             self.ip_combo.setEditText(str(current_ip))
         else:
@@ -132,14 +190,12 @@ class CameraDialog(QDialog):
         ip_label.setStyleSheet(f"font-weight: 600; font-size: 13px; color: {PALETTE['text']};")
         form.addRow(ip_label, self.ip_combo)
 
-        # Port combo box (editable)
         self.port_combo = QComboBox()
         self.port_combo.setEditable(True)
         self.port_combo.setView(QListView())
         self.port_combo.addItems(self.PORT_SAMPLES)
         self.port_combo.setStyleSheet(self._combo_style())
-        port_line = self.port_combo.lineEdit()
-        port_line.setPlaceholderText("e.g. 8080")
+        self.port_combo.lineEdit().setPlaceholderText("e.g. 8080")
         if current_port:
             self.port_combo.setEditText(str(current_port))
         else:
@@ -151,7 +207,6 @@ class CameraDialog(QDialog):
 
         layout.addLayout(form)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
         btn_layout.addStretch()
@@ -191,9 +246,7 @@ class CameraDialog(QDialog):
                 font-size: 12px;
                 font-weight: 700;
             }}
-            QPushButton:hover {{
-                background: #62f0bb;
-            }}
+            QPushButton:hover {{ background: #62f0bb; }}
         """)
         self.btn_connect.clicked.connect(self._on_accept)
         btn_layout.addWidget(self.btn_connect)
@@ -213,12 +266,8 @@ class CameraDialog(QDialog):
                 font-weight: 500;
                 min-height: 22px;
             }}
-            QComboBox:hover {{
-                border-color: {PALETTE['accent_2']};
-            }}
-            QComboBox:focus {{
-                border-color: {PALETTE['accent']};
-            }}
+            QComboBox:hover {{ border-color: {PALETTE['accent_2']}; }}
+            QComboBox:focus {{ border-color: {PALETTE['accent']}; }}
             QComboBox QLineEdit {{
                 color: {PALETTE['text']};
                 background: transparent;
@@ -237,9 +286,7 @@ class CameraDialog(QDialog):
                 border-bottom-right-radius: 8px;
                 background-color: {PALETTE['card']};
             }}
-            QComboBox::drop-down:hover {{
-                background-color: #24344a;
-            }}
+            QComboBox::drop-down:hover {{ background-color: #24344a; }}
             QComboBox::down-arrow {{
                 border-left: 4px solid transparent;
                 border-right: 4px solid transparent;
@@ -247,9 +294,7 @@ class CameraDialog(QDialog):
                 width: 0px;
                 height: 0px;
             }}
-            QComboBox::down-arrow:hover {{
-                border-top-color: {PALETTE['accent']};
-            }}
+            QComboBox::down-arrow:hover {{ border-top-color: {PALETTE['accent']}; }}
             QComboBox QAbstractItemView {{
                 background-color: {PALETTE['card']};
                 color: {PALETTE['text']};
@@ -279,7 +324,6 @@ class CameraDialog(QDialog):
         ip = self.ip_combo.currentText().strip()
         port = self.port_combo.currentText().strip()
         if not ip or not port:
-            # Highlight border if missing
             if not ip:
                 self.ip_combo.setStyleSheet(self._combo_style() + " QComboBox { border: 1px solid #ff8b7b; }")
             if not port:
@@ -292,6 +336,7 @@ class CameraDialog(QDialog):
             self.ip_combo.currentText().strip(),
             self.port_combo.currentText().strip(),
         )
+
 
 class CameraScreen(QLabel):
     def __init__(self):
@@ -422,10 +467,14 @@ class HistoryCard(QFrame):
         )
 
         loc_row = QHBoxLayout()
-        loc_row.setSpacing(10)
+        loc_row.setSpacing(6)
+
+        # SVG pin — green if coords, dim otherwise
+        pin_color = PALETTE["accent"] if has_coords else PALETTE["dim"]
+        loc_row.addWidget(_svg_label("map-pin", 14, pin_color), 0, Qt.AlignmentFlag.AlignVCenter)
 
         if has_coords:
-            loc_lbl = QLabel(f"Location  ·  {location_str}")
+            loc_lbl = QLabel(f"{location_str}")
             loc_lbl.setObjectName("HistLocOn")
             loc_row.addWidget(loc_lbl, 1)
 
@@ -433,6 +482,8 @@ class HistoryCard(QFrame):
             btn.setObjectName("MapBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(28)
+            btn.setIcon(_svg_icon("map", 14, PALETTE["accent_2"]))
+            btn.setIconSize(QSize(14, 14))
             try:
                 lat = float(location["lat"])
                 lon = float(location["lon"])
@@ -445,9 +496,7 @@ class HistoryCard(QFrame):
                 btn.setEnabled(False)
             loc_row.addWidget(btn, 0)
         else:
-            loc_lbl = QLabel(
-                f"Location  ·  {location_str if location_str else 'Unknown'}"
-            )
+            loc_lbl = QLabel(f"{location_str if location_str else 'Unknown'}")
             loc_lbl.setObjectName("HistLocOff")
             loc_row.addWidget(loc_lbl, 1)
 
@@ -483,38 +532,10 @@ class HistoryPage(QWidget):
 
         eyebrow = QLabel("E-SAFAI")
         eyebrow.setObjectName("Eyebrow")
-        eyebrow.setStyleSheet(
-            """
-            QLabel#Eyebrow {
-                font-family: 'Segoe UI', 'Poppins', 'Arial', sans-serif;
-                font-size: 22px;
-                font-weight: 800;
-                letter-spacing: 3px;
-                color: #3ee0a2;
-                padding: 0px;
-                margin: 0px;
-                background: transparent;
-            }
-            """
-        )
         titles.addWidget(eyebrow)
 
         title = QLabel("Detection History")
         title.setObjectName("PageTitle")
-        title.setStyleSheet(
-            """
-            QLabel#PageTitle {
-                font-family: 'Segoe UI', 'Arial', sans-serif;
-                font-size: 13px;
-                font-weight: 500;
-                letter-spacing: 1.2px;
-                color: #FFFFFF;
-                padding: 0px;
-                margin: 0px;
-                background: transparent;
-            }
-            """
-        )
         titles.addWidget(title)
         self.meta_label = QLabel("Stored detections from connected cameras")
         self.meta_label.setObjectName("PageMeta")
@@ -550,16 +571,16 @@ class HistoryPage(QWidget):
             empty.setObjectName("EmptyState")
             el = QVBoxLayout(empty)
             el.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon = QLabel("◌")
+            icon = _svg_label("archive", 28, PALETTE["dim"], 1.5)
+            icon.setFixedSize(28, 28)
             icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon.setStyleSheet("color: #5d6d82; font-size: 28px;")
             msg = QLabel("No detection records yet")
             msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
             msg.setObjectName("EmptyTitle")
             hint = QLabel("New evidence cards will appear here after garbage is detected.")
             hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
             hint.setObjectName("PageMeta")
-            el.addWidget(icon)
+            el.addWidget(icon, alignment=Qt.AlignmentFlag.AlignCenter)
             el.addWidget(msg)
             el.addWidget(hint)
             self.vbox.insertWidget(0, empty)
@@ -583,53 +604,29 @@ class HistoryPage(QWidget):
                 color: {PALETTE["text"]};
                 font-family: "Segoe UI", "Inter", "Noto Sans", sans-serif;
             }}
-            QWidget#HistoryList {{
-                background: {PALETTE["bg"]};
-            }}
+            QWidget#HistoryList {{ background: {PALETTE["bg"]}; }}
             QLabel#Eyebrow {{
-                color: {PALETTE["accent"]};
-                font-size: 11px;
-                font-weight: 700;
-                letter-spacing: 2.4px;
+                color: {PALETTE["accent"]}; font-size: 11px;
+                font-weight: 700; letter-spacing: 2.4px;
             }}
             QLabel#PageTitle {{
-                color: {PALETTE["text"]};
-                font-size: 26px;
-                font-weight: 800;
-                letter-spacing: -0.4px;
+                color: {PALETTE["text"]}; font-size: 26px;
+                font-weight: 800; letter-spacing: -0.4px;
             }}
-            QLabel#PageMeta {{
-                color: {PALETTE["muted"]};
-                font-size: 12px;
-            }}
+            QLabel#PageMeta {{ color: {PALETTE["muted"]}; font-size: 12px; }}
             QLabel#HistTime {{
-                color: {PALETTE["accent_2"]};
-                font-size: 16px;
-                font-weight: 800;
-                letter-spacing: -0.2px;
+                color: {PALETTE["accent_2"]}; font-size: 16px;
+                font-weight: 800; letter-spacing: -0.2px;
             }}
             QLabel#HistKicker {{
-                color: {PALETTE["dim"]};
-                font-size: 10px;
-                font-weight: 700;
-                letter-spacing: 1.4px;
+                color: {PALETTE["dim"]}; font-size: 10px;
+                font-weight: 700; letter-spacing: 1.4px;
             }}
-            QLabel#HistBody {{
-                color: {PALETTE["text"]};
-                font-size: 12px;
-            }}
-            QLabel#HistLocOn {{
-                color: {PALETTE["accent"]};
-                font-size: 12px;
-            }}
-            QLabel#HistLocOff {{
-                color: {PALETTE["dim"]};
-                font-size: 12px;
-            }}
+            QLabel#HistBody {{ color: {PALETTE["text"]}; font-size: 12px; }}
+            QLabel#HistLocOn {{ color: {PALETTE["accent"]}; font-size: 12px; }}
+            QLabel#HistLocOff {{ color: {PALETTE["dim"]}; font-size: 12px; }}
             QLabel#EmptyTitle {{
-                color: {PALETTE["text"]};
-                font-size: 15px;
-                font-weight: 700;
+                color: {PALETTE["text"]}; font-size: 15px; font-weight: 700;
             }}
             QLabel#HistThumb {{
                 background: {PALETTE["surface"]};
@@ -660,19 +657,13 @@ class HistoryPage(QWidget):
                 border: 1px solid {PALETTE["accent_2"]};
                 color: {PALETTE["accent_2"]};
             }}
-            QScrollArea {{
-                border: none;
-                background: {PALETTE["bg"]};
-            }}
+            QScrollArea {{ border: none; background: {PALETTE["bg"]}; }}
             QScrollBar:vertical {{
-                background: transparent;
-                width: 10px;
-                margin: 4px 0;
+                background: transparent; width: 10px; margin: 4px 0;
             }}
             QScrollBar::handle:vertical {{
                 background: {PALETTE["stroke"]};
-                border-radius: 5px;
-                min-height: 32px;
+                border-radius: 5px; min-height: 32px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
@@ -694,10 +685,17 @@ class MainWindow(QMainWindow):
         self.last_frames = {}
         self.config = self.load_config()
 
-        # Live location state
         self.location_labels = {}
+        self.location_icons = {}
         self.map_buttons = {}
         self.camera_locations = {}
+        self.camera_garbage = {i: False for i in range(4)}
+        self.alert_active = False
+        self.blink_state = False
+
+        self.blink_timer = QTimer(self)
+        self.blink_timer.setInterval(500)
+        self.blink_timer.timeout.connect(self._blink_tick)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -716,7 +714,6 @@ class MainWindow(QMainWindow):
         side_layout.setContentsMargins(14, 22, 14, 20)
         side_layout.setSpacing(4)
 
-        # -- Logo area --
         logo_frame = QFrame()
         logo_frame.setStyleSheet(
             f"background: transparent; border: none;"
@@ -727,10 +724,9 @@ class MainWindow(QMainWindow):
         logo_inner.setContentsMargins(0, 0, 0, 12)
         logo_inner.setSpacing(6)
 
-        logo_icon = QLabel("♻️")
-        logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_icon.setStyleSheet("font-size: 30px; background: transparent; border: none;")
-        logo_inner.addWidget(logo_icon)
+        logo_icon = _svg_label("recycle", 32, PALETTE["accent"], 2.0)
+        logo_icon.setFixedSize(32, 32)
+        logo_inner.addWidget(logo_icon, alignment=Qt.AlignmentFlag.AlignCenter)
 
         logo = QLabel("E-Safai")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -760,9 +756,15 @@ class MainWindow(QMainWindow):
         )
         side_layout.addWidget(nav_label)
 
-        self.btn_live = QPushButton("   📷   Live Cameras")
-        self.btn_history = QPushButton("   🗂️   History")
-        self.btn_stats = QPushButton("   📈   Statistics")
+        self.btn_live = QPushButton("  Live Cameras")
+        self.btn_history = QPushButton("  History")
+        self.btn_stats = QPushButton("  Statistics")
+
+        self.btn_live.setIcon(_svg_icon("camera", 16, PALETTE["muted"]))
+        self.btn_history.setIcon(_svg_icon("archive", 16, PALETTE["muted"]))
+        self.btn_stats.setIcon(_svg_icon("bar-chart", 16, PALETTE["muted"]))
+        for b in (self.btn_live, self.btn_history, self.btn_stats):
+            b.setIconSize(QSize(16, 16))
 
         _nav_btn_qss = f"""
             QPushButton {{
@@ -803,7 +805,6 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.btn_stats)
         side_layout.addStretch()
 
-        # -- Sidebar footer --
         footer_frame = QFrame()
         footer_frame.setStyleSheet(
             f"background: transparent; border: none;"
@@ -814,30 +815,24 @@ class MainWindow(QMainWindow):
         footer_inner.setContentsMargins(0, 12, 0, 0)
         footer_inner.setSpacing(8)
 
-        # Logo image above the footer text
-        LOGO_SIZE = 110   # <-- change this single value to resize (try 64, 80, 96, 110)
+        LOGO_SIZE = 110
 
         brand_logo = QLabel()
         brand_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         brand_logo.setFixedSize(LOGO_SIZE, LOGO_SIZE)
         brand_logo.setStyleSheet("background: transparent; border: none;")
 
-        # >>> ADD YOUR IMAGE PATH BELOW <<<
-        brand_logo_pixmap = QPixmap("assets/sharpen_Ai.JPEG")   # <-- change this path
+        brand_logo_pixmap = QPixmap("assets/sharpen_Ai.JPEG")
         if not brand_logo_pixmap.isNull():
             brand_logo.setPixmap(
                 brand_logo_pixmap.scaled(
                     LOGO_SIZE, LOGO_SIZE,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-    )
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
         else:
-    # graceful fallback if image is missing
-            brand_logo.setText("⚡")
-            brand_logo.setStyleSheet(
-        f"background: transparent; border: none; font-size: {int(LOGO_SIZE * 0.5)}px;"
-    )
+            brand_logo.setPixmap(_svg_pixmap("zap", LOGO_SIZE // 2, PALETTE["accent"]))
         footer_inner.addWidget(brand_logo, alignment=Qt.AlignmentFlag.AlignCenter)
 
         ver_label = QLabel("POWERED BY\nSHARPEN AI")
@@ -847,7 +842,6 @@ class MainWindow(QMainWindow):
             f"font-size: 9px;"
             f"font-weight: 700;"
             f"letter-spacing: 1.6px;"
-            f"line-height: 1.6;"
             f"background: transparent; border: none;"
         )
         footer_inner.addWidget(ver_label)
@@ -855,7 +849,6 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(footer_frame)
         root.addWidget(sidebar)
 
-        # ---- Stacked pages ----
         self.stack = QStackedWidget()
         root.addWidget(self.stack, 1)
 
@@ -868,7 +861,6 @@ class MainWindow(QMainWindow):
         self.stats_page = StatsPage(self.evidence_manager)
         self.stack.addWidget(self.stats_page)
 
-        # Auto-reconnect saved cameras
         for cid_str, cfg in self.config.items():
             cid = int(cid_str)
             if cfg.get("ip") and cfg.get("port"):
@@ -887,7 +879,6 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(14)
 
-        # ── Header ──
         header = QVBoxLayout()
         header.setSpacing(2)
         header.setContentsMargins(0, 0, 0, 0)
@@ -927,14 +918,12 @@ class MainWindow(QMainWindow):
         header.addWidget(subtitle)
         root.addLayout(header, 0)
 
-        # ── Thin separator ──
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFixedHeight(1)
         sep.setStyleSheet(f"background: {PALETTE['stroke']}; border: none;")
         root.addWidget(sep)
 
-        # ── Camera grid ──
         grid = QGridLayout()
         grid.setSpacing(12)
         root.addLayout(grid, 1)
@@ -943,12 +932,11 @@ class MainWindow(QMainWindow):
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
 
-        cam_accent_colors = [PALETTE['accent_2'], PALETTE['accent'], "#f6c177", "#ff8b7b"]
+        cam_accent_colors = ["#f6c177"] * 4
 
         for i in range(4):
             accent = cam_accent_colors[i]
 
-            # Outer card container
             card = QFrame()
             card.setObjectName(f"CamCard{i}")
             card.setStyleSheet(f"""
@@ -962,7 +950,7 @@ class MainWindow(QMainWindow):
             card_layout.setContentsMargins(10, 8, 10, 8)
             card_layout.setSpacing(6)
 
-            # -- Top bar: camera label + location --
+            # ── top bar: CAM badge + location pin + location text + map button
             top_bar = QHBoxLayout()
             top_bar.setSpacing(8)
 
@@ -976,15 +964,23 @@ class MainWindow(QMainWindow):
             )
             top_bar.addWidget(cam_badge)
 
-            loc_label = QLabel("📍 Location: Unknown")
+            # Location pin icon (SVG, theme-colored)
+            loc_icon = _svg_label("map-pin", 14, PALETTE["dim"])
+            top_bar.addWidget(loc_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            # Location text
+            loc_label = QLabel("Location: Unknown")
             loc_label.setStyleSheet(
                 f"color: {PALETTE['dim']}; font-size: 11px; font-weight: 500;"
             )
             top_bar.addWidget(loc_label, 1)
 
-            map_btn = QPushButton("🗺 Map")
+            # Map button — SVG icon, hidden until GPS arrives
+            map_btn = QPushButton(" Map")
             map_btn.setFixedHeight(24)
             map_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            map_btn.setIcon(_svg_icon("map", 12, PALETTE["text"]))
+            map_btn.setIconSize(QSize(12, 12))
             map_btn.setStyleSheet(
                 f"QPushButton {{ background: {PALETTE['card_alt']};"
                 f"  color: {PALETTE['text']}; border: 1px solid {PALETTE['stroke']};"
@@ -998,19 +994,12 @@ class MainWindow(QMainWindow):
             top_bar.addWidget(map_btn, 0)
             card_layout.addLayout(top_bar)
 
-            # -- Camera screen --
+            # ── camera stream
             screen = CameraScreen()
-            screen.setStyleSheet(
-                f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-                f"stop:0 #0d1520, stop:1 #111b28);"
-                f"color: {PALETTE['dim']}; font-size: 40px; font-weight: 300;"
-                f"border: 2px dashed {PALETTE['stroke']};"
-                f"border-radius: 14px;"
-            )
             screen.mousePressEvent = lambda e, cid=i: self.on_screen_clicked(cid)
             card_layout.addWidget(screen, 1)
 
-            # -- Bottom status bar --
+            # ── bottom bar: status dot + status text + connect hint
             bottom_bar = QHBoxLayout()
             bottom_bar.setSpacing(6)
 
@@ -1039,21 +1028,73 @@ class MainWindow(QMainWindow):
             self.screens[i] = screen
             self.status_labels[i] = status
             self.location_labels[i] = loc_label
+            self.location_icons[i] = loc_icon
             self.map_buttons[i] = map_btn
-            # Store extra UI refs for status dot and connect hint
+
             if not hasattr(self, '_status_dots'):
                 self._status_dots = {}
                 self._connect_hints = {}
             self._status_dots[i] = status_dot
             self._connect_hints[i] = connect_hint
 
+        # ── Alert banner (hidden by default, top-right overlay)
+        self.alert_banner = QFrame(page)
+        self.alert_banner.setObjectName("AlertBanner")
+        self.alert_banner.setStyleSheet(f"""
+            QFrame#AlertBanner {{
+                background: #c62828;
+                border: 1px solid #ff5252;
+                border-radius: 10px;
+            }}
+        """)
+        banner_layout = QHBoxLayout(self.alert_banner)
+        banner_layout.setContentsMargins(14, 10, 14, 10)
+        banner_layout.setSpacing(0)
+
+        self.alert_label = QLabel("Garbage detected in multiple cameras")
+        self.alert_label.setStyleSheet(
+            "color: #ffffff; font-size: 13px; font-weight: 700; "
+            "letter-spacing: 0.3px; background: transparent; border: none;"
+        )
+        banner_layout.addWidget(self.alert_label)
+        self.alert_banner.setVisible(False)
+
+        shadow = QGraphicsDropShadowEffect(self.alert_banner)
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(198, 40, 40, 160))
+        self.alert_banner.setGraphicsEffect(shadow)
+
         return page
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "alert_banner") and self.alert_banner.isVisible():
+            self._position_banner()
+
+    def _position_banner(self):
+        if not hasattr(self, "alert_banner") or not hasattr(self, "live_page"):
+            return
+        self.alert_banner.adjustSize()
+        w = self.alert_banner.width()
+        margin = 16
+        target_x = max(margin, self.live_page.width() - w - margin)
+        self.alert_banner.move(target_x, margin)
+        self.alert_banner.raise_()
 
     def switch_page(self, idx):
         self.stack.setCurrentIndex(idx)
         self.btn_live.setChecked(idx == 0)
         self.btn_history.setChecked(idx == 1)
         self.btn_stats.setChecked(idx == 2)
+        # Update icon color to reflect active state
+        active = PALETTE["accent_2"]
+        inactive = PALETTE["muted"]
+        self.btn_live.setIcon(_svg_icon("camera", 16, active if idx == 0 else inactive))
+        self.btn_history.setIcon(_svg_icon("archive", 16, active if idx == 1 else inactive))
+        self.btn_stats.setIcon(_svg_icon("bar-chart", 16, active if idx == 2 else inactive))
+        if idx == 0:
+            self._position_banner()
         if idx == 1:
             self.history_page.reload()
         elif idx == 2:
@@ -1121,10 +1162,14 @@ class MainWindow(QMainWindow):
         self.status_labels[cam_id].setStyleSheet(
             f"color: {PALETTE['accent_2']}; font-size: 11px; font-weight: 500;"
         )
-        self.location_labels[cam_id].setText("📍 Location: Locating...")
+        self.location_labels[cam_id].setText("Locating...")
         self.location_labels[cam_id].setStyleSheet(
             f"color: {PALETTE['accent_2']}; font-size: 11px; font-weight: 500;"
         )
+        if cam_id in self.location_icons:
+            self.location_icons[cam_id].setPixmap(
+                _svg_pixmap("map-pin", 14, PALETTE["accent_2"])
+            )
         self.map_buttons[cam_id].setVisible(False)
         if hasattr(self, '_status_dots') and cam_id in self._status_dots:
             self._status_dots[cam_id].setStyleSheet(
@@ -1139,9 +1184,13 @@ class MainWindow(QMainWindow):
     def on_location_ready(self, cam_id, lat, lon):
         self.camera_locations[cam_id] = (lat, lon)
         if cam_id in self.location_labels:
-            self.location_labels[cam_id].setText(f"📍 {lat:.5f}, {lon:.5f}")
+            self.location_labels[cam_id].setText(f"{lat:.5f}, {lon:.5f}")
             self.location_labels[cam_id].setStyleSheet(
                 f"color: {PALETTE['accent']}; font-size: 11px; font-weight: 500;"
+            )
+        if cam_id in self.location_icons:
+            self.location_icons[cam_id].setPixmap(
+                _svg_pixmap("map-pin", 14, PALETTE["accent"])
             )
         if cam_id in self.map_buttons:
             btn = self.map_buttons[cam_id]
@@ -1180,6 +1229,7 @@ class MainWindow(QMainWindow):
             f"border: 2px dashed {PALETTE['stroke']};"
             f"border-radius: 14px;"
         )
+
         self.status_labels[cam_id].setText(f"Disconnected ({reason})")
         self.status_labels[cam_id].setStyleSheet(
             f"color: #ff8b7b; font-size: 11px; font-weight: 500;"
@@ -1187,13 +1237,22 @@ class MainWindow(QMainWindow):
         screen.mousePressEvent = lambda e, cid=cam_id: self.on_screen_clicked(cid)
 
         if cam_id in self.location_labels:
-            self.location_labels[cam_id].setText("📍 Location: Unknown")
+            self.location_labels[cam_id].setText("Location: Unknown")
             self.location_labels[cam_id].setStyleSheet(
                 f"color: {PALETTE['dim']}; font-size: 11px; font-weight: 500;"
+            )
+        if cam_id in self.location_icons:
+            self.location_icons[cam_id].setPixmap(
+                _svg_pixmap("map-pin", 14, PALETTE["dim"])
             )
         if cam_id in self.map_buttons:
             self.map_buttons[cam_id].setVisible(False)
         self.camera_locations.pop(cam_id, None)
+
+        if self.camera_garbage.get(cam_id):
+            self.camera_garbage[cam_id] = False
+            self._evaluate_alert()
+
         if hasattr(self, '_status_dots') and cam_id in self._status_dots:
             self._status_dots[cam_id].setStyleSheet(
                 f"color: #ff8b7b; font-size: 8px;"
@@ -1203,6 +1262,53 @@ class MainWindow(QMainWindow):
             self._connect_hints[cam_id].setStyleSheet(
                 f"color: {PALETTE['dim']}; font-size: 10px; font-style: italic;"
             )
+
+    def _evaluate_alert(self):
+        garbage_cams = [c for c, g in self.camera_garbage.items() if g]
+        count = len(garbage_cams)
+
+        if count >= 2:
+            if not self.alert_active:
+                self.alert_active = True
+                self.alert_label.setText(
+                    f"Garbage Alert  ·  {count} cameras active"
+                )
+                self.alert_banner.setVisible(True)
+                self._position_banner()
+                self.blink_timer.start()
+            else:
+                self.alert_label.setText(
+                    f"Garbage Alert  ·  {count} cameras active"
+                )
+                self._position_banner()
+        else:
+            if self.alert_active:
+                self.alert_active = False
+                self.alert_banner.setVisible(False)
+                self.blink_timer.stop()
+                self.blink_state = False
+                for cid in self.screens:
+                    if cid in self.workers:
+                        self.screens[cid].setStyleSheet(
+                            f"background: #0a0f17; border: 1px solid {PALETTE['stroke']};"
+                            f"border-radius: 14px;"
+                        )
+
+    def _blink_tick(self):
+        self.blink_state = not self.blink_state
+        for cid, is_garbage in self.camera_garbage.items():
+            if not is_garbage or cid not in self.screens:
+                continue
+            if self.blink_state:
+                self.screens[cid].setStyleSheet(
+                    "background: #0a0f17; border: 3px solid #ff1744;"
+                    "border-radius: 14px;"
+                )
+            else:
+                self.screens[cid].setStyleSheet(
+                    "background: #0a0f17; border: 3px solid #7f0e1a;"
+                    "border-radius: 14px;"
+                )
 
     def update_screen(self, cam_id, frame, status):
         if cam_id not in self.workers:
@@ -1217,6 +1323,12 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, '_connect_hints') and cam_id in self._connect_hints:
             self._connect_hints[cam_id].setText("")
+
+        is_garbage = status.lower().startswith("garbage detected")
+        if self.camera_garbage.get(cam_id) != is_garbage:
+            self.camera_garbage[cam_id] = is_garbage
+            self._evaluate_alert()
+
         if frame is None:
             return
         h, w, ch = frame.shape
@@ -1224,11 +1336,11 @@ class MainWindow(QMainWindow):
         pix = QPixmap.fromImage(qimg)
         self.last_frames[cam_id] = pix
         self.screens[cam_id].set_frame(pix)
-        # Update screen border when receiving frames
-        self.screens[cam_id].setStyleSheet(
-            f"background: #0a0f17; border: 1px solid {PALETTE['stroke']};"
-            f"border-radius: 14px;"
-        )
+        if not (self.alert_active and self.camera_garbage.get(cam_id)):
+            self.screens[cam_id].setStyleSheet(
+                f"background: #0a0f17; border: 1px solid #f6c177;"
+                f"border-radius: 14px;"
+            )
 
     def closeEvent(self, event):
         for w in self.workers.values():
