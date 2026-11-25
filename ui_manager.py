@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QGridLayout, QLabel, QPushButton, QInputDialog,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QStackedWidget, QScrollArea,
     QFrame, QGraphicsDropShadowEffect, QDialog, QFormLayout, QComboBox,
-    QListView, QLineEdit
+    QListView, QLineEdit, 
 )
-from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QIcon
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter, QIcon, QPainterPath
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtSvg import QSvgRenderer
 from camera_worker import CameraWorker
@@ -18,6 +18,7 @@ from detector_engine import GarbageDetector
 from evidence_manager import EvidenceManager
 from location_manager import LocationManager
 import json, os
+from PyQt6.QtCore import Qt, QSize, QRectF, QPropertyAnimation, QEasingCurve
 
 
 CONFIG_PATH = "configs/cameras.json"
@@ -371,34 +372,114 @@ class CameraScreen(QLabel):
         super().resizeEvent(event)
         self._apply_pixmap()
 
+# History Page's Design
+
+HIST_ACCENT = PALETTE["accent_2"]          # light blue
+
+
+def _hist_rgba(color, alpha):
+    c = color.lstrip("#")
+    r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def _info_chip(text):
+    """Uniform pill used for timestamp-adjacent info: camera, objects, conf."""
+    lbl = QLabel(text)
+    lbl.setObjectName("HistChip")
+    return lbl
+
+
+def _class_pill(name, count, color):
+    """Neutral pill with a small colour dot (dot colour = class colour used
+    in the Statistics donut, so the two dashboards read the same)."""
+    pill = QFrame()
+    pill.setObjectName("HistClassPill")
+    lay = QHBoxLayout(pill)
+    lay.setContentsMargins(10, 4, 10, 4)
+    lay.setSpacing(7)
+
+    dot = QLabel()
+    dot.setFixedSize(8, 8)
+    dot.setStyleSheet(f"background: {color}; border-radius: 4px; border: none;")
+    lay.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    txt = QLabel(f"{name}")
+    txt.setObjectName("HistClassName")
+    lay.addWidget(txt)
+
+    cnt = QLabel(f"×{count}")
+    cnt.setObjectName("HistClassCount")
+    lay.addWidget(cnt)
+    return pill
+
+
+def _rounded_thumb(pix, w, h, radius):
+    """Scale (keeping the full evidence frame visible) and round the corners."""
+    scaled = pix.scaled(
+        w, h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    out = QPixmap(w, h)
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    x = (w - scaled.width()) / 2.0
+    y = (h - scaled.height()) / 2.0
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(x, y, scaled.width(), scaled.height()), radius, radius)
+    p.setClipPath(path)
+    p.drawPixmap(int(x), int(y), scaled)
+    p.end()
+    return out
+
 
 class HistoryCard(QFrame):
+    _SHADOW_REST = 22
+    _SHADOW_HOVER = 40
+
     def __init__(self, record, image_path):
         super().__init__()
         self.setObjectName("HistoryCard")
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setMinimumHeight(168)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(self._qss())
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 12, 16, 12)
+        # left accent strip + content
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        strip = QFrame()
+        strip.setObjectName("HistAccent")
+        strip.setFixedWidth(4)
+        outer.addWidget(strip)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(14, 12, 16, 12)
         layout.setSpacing(16)
+        outer.addLayout(layout, 1)
 
+        # ── thumbnail ──
         thumb = QLabel()
         thumb.setObjectName("HistThumb")
         thumb.setFixedSize(220, 144)
         thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pix = QPixmap(image_path)
         if not pix.isNull():
-            thumb.setPixmap(pix.scaled(
-                220, 144,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation))
+            thumb.setPixmap(_rounded_thumb(pix, 220, 144, 10))
+        else:
+            thumb.setText("No preview")
         layout.addWidget(thumb, 0, Qt.AlignmentFlag.AlignTop)
 
         info = QVBoxLayout()
-        info.setSpacing(8)
+        info.setSpacing(9)
         info.setContentsMargins(0, 2, 0, 2)
 
+        # ── timestamp ──
         ts_lbl = QLabel(record.get("timestamp_str", "Unknown time"))
         ts_lbl.setObjectName("HistTime")
         info.addWidget(ts_lbl)
@@ -407,7 +488,6 @@ class HistoryCard(QFrame):
             cam_id = int(record.get("cam_id", 0))
         except (TypeError, ValueError):
             cam_id = 0
-        cam_color = CAM_COLORS[cam_id % 4]
 
         classes_val = record.get("classes", {})
         class_items = []
@@ -430,14 +510,16 @@ class HistoryCard(QFrame):
         except (TypeError, ValueError):
             max_conf = 0.0
 
+        # ── camera / objects / confidence — one uniform colour ──
         meta = QHBoxLayout()
         meta.setSpacing(8)
-        meta.addWidget(_chip(f"Camera {cam_id + 1}", cam_color))
-        meta.addWidget(_chip(f"{num_obj} object{'s' if num_obj != 1 else ''}", PALETTE["accent_2"]))
-        meta.addWidget(_chip(f"Max conf {max_conf:.2f}", PALETTE["accent"]))
+        meta.addWidget(_info_chip(f"Camera {cam_id + 1}"))
+        meta.addWidget(_info_chip(f"{num_obj} object{'s' if num_obj != 1 else ''}"))
+        meta.addWidget(_info_chip(f"Max conf {max_conf:.2f}"))
         meta.addStretch()
         info.addLayout(meta)
 
+        # ── detected classes ──
         detected_lbl = QLabel("DETECTED")
         detected_lbl.setObjectName("HistKicker")
         info.addWidget(detected_lbl)
@@ -447,7 +529,7 @@ class HistoryCard(QFrame):
         if class_items:
             for i, (name, count) in enumerate(class_items):
                 color = CLASS_COLORS[i % len(CLASS_COLORS)]
-                chips.addWidget(_chip(f"{name}  ×{count}", color))
+                chips.addWidget(_class_pill(name, count, color))
         else:
             fallback = QLabel(f"Detected: {classes_str}")
             fallback.setObjectName("HistBody")
@@ -456,6 +538,7 @@ class HistoryCard(QFrame):
         chips.addStretch()
         info.addLayout(chips)
 
+        # ── location ──
         location_str = record.get("location_str", "Unknown")
         location = record.get("location")
 
@@ -469,8 +552,7 @@ class HistoryCard(QFrame):
         loc_row = QHBoxLayout()
         loc_row.setSpacing(6)
 
-        # SVG pin — green if coords, dim otherwise
-        pin_color = PALETTE["accent"] if has_coords else PALETTE["dim"]
+        pin_color = HIST_ACCENT if has_coords else PALETTE["dim"]
         loc_row.addWidget(_svg_label("map-pin", 14, pin_color), 0, Qt.AlignmentFlag.AlignVCenter)
 
         if has_coords:
@@ -482,7 +564,7 @@ class HistoryCard(QFrame):
             btn.setObjectName("MapBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(28)
-            btn.setIcon(_svg_icon("map", 14, PALETTE["accent_2"]))
+            btn.setIcon(_svg_icon("map", 14, HIST_ACCENT))
             btn.setIconSize(QSize(14, 14))
             try:
                 lat = float(location["lat"])
@@ -504,11 +586,145 @@ class HistoryCard(QFrame):
         info.addStretch()
         layout.addLayout(info, 1)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(22)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 80))
-        self.setGraphicsEffect(shadow)
+        # ── shadow that "lifts" on hover ──
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(self._SHADOW_REST)
+        self._shadow.setOffset(0, 6)
+        self._shadow.setColor(QColor(0, 0, 0, 80))
+        self.setGraphicsEffect(self._shadow)
+
+        self._hover_anim = QPropertyAnimation(self._shadow, b"blurRadius", self)
+        self._hover_anim.setDuration(180)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    # ── hover feedback ──
+    def _animate_shadow(self, target):
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self._shadow.blurRadius())
+        self._hover_anim.setEndValue(float(target))
+        self._hover_anim.start()
+
+    def enterEvent(self, event):
+        self._shadow.setColor(QColor(94, 184, 255, 70) if HIST_ACCENT == PALETTE["accent_2"]
+                              else QColor(62, 224, 162, 70))
+        self._animate_shadow(self._SHADOW_HOVER)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._shadow.setColor(QColor(0, 0, 0, 80))
+        self._animate_shadow(self._SHADOW_REST)
+        super().leaveEvent(event)
+
+    # ── styling (scoped to this card, overrides older global rules) ──
+    @staticmethod
+    def _qss():
+        a = HIST_ACCENT
+        return f"""
+            QFrame#HistoryCard {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {PALETTE["card_alt"]}, stop:1 {PALETTE["card"]});
+                border: 1px solid {PALETTE["stroke"]};
+                border-radius: 14px;
+            }}
+            QFrame#HistoryCard:hover {{
+                border: 1px solid {_hist_rgba(a, 0.55)};
+            }}
+            QFrame#HistAccent {{
+                background: {a};
+                border: none;
+                border-top-left-radius: 14px;
+                border-bottom-left-radius: 14px;
+            }}
+            QLabel#HistThumb {{
+                background: {PALETTE["bg"]};
+                color: {PALETTE["dim"]};
+                border: 1px solid {PALETTE["stroke"]};
+                border-radius: 10px;
+                font-size: 12px;
+            }}
+            QLabel#HistTime {{
+                color: {PALETTE["text"]};
+                font-size: 15px;
+                font-weight: 700;
+                letter-spacing: 0.2px;
+                background: transparent;
+                border: none;
+            }}
+            QLabel#HistChip {{
+                color: {a};
+                background: {_hist_rgba(a, 0.12)};
+                border: 1px solid {_hist_rgba(a, 0.38)};
+                border-radius: 11px;
+                padding: 3px 11px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#HistKicker {{
+                color: {PALETTE["dim"]};
+                background: transparent;
+                border: none;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.6px;
+            }}
+            QFrame#HistClassPill {{
+                background: {PALETTE["surface"]};
+                border: 1px solid {PALETTE["stroke"]};
+                border-radius: 11px;
+            }}
+            QLabel#HistClassName {{
+                color: {PALETTE["text"]};
+                background: transparent;
+                border: none;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#HistClassCount {{
+                color: {PALETTE["muted"]};
+                background: transparent;
+                border: none;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#HistBody {{
+                color: {PALETTE["muted"]};
+                background: transparent;
+                border: none;
+                font-size: 12px;
+            }}
+            QLabel#HistLocOn {{
+                color: {PALETTE["text"]};
+                background: transparent;
+                border: none;
+                font-size: 12px;
+            }}
+            QLabel#HistLocOff {{
+                color: {PALETTE["dim"]};
+                background: transparent;
+                border: none;
+                font-size: 12px;
+            }}
+            QPushButton#MapBtn {{
+                color: {a};
+                background: transparent;
+                border: 1px solid {_hist_rgba(a, 0.45)};
+                border-radius: 8px;
+                padding: 0px 12px;
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QPushButton#MapBtn:hover {{
+                background: {_hist_rgba(a, 0.16)};
+                border: 1px solid {a};
+            }}
+            QPushButton#MapBtn:pressed {{
+                background: {_hist_rgba(a, 0.28)};
+            }}
+            QPushButton#MapBtn:disabled {{
+                color: {PALETTE["dim"]};
+                border: 1px solid {PALETTE["stroke"]};
+            }}
+        """
 
 
 class HistoryPage(QWidget):
@@ -532,10 +748,38 @@ class HistoryPage(QWidget):
 
         eyebrow = QLabel("E-SAFAI")
         eyebrow.setObjectName("Eyebrow")
+        eyebrow.setStyleSheet(
+            """
+            QLabel#Eyebrow {
+                font-family: 'Segoe UI', 'Poppins', 'Arial', sans-serif;
+                font-size: 22px;
+                font-weight: 800;
+                letter-spacing: 3px;
+                color: #3ee0a2;
+                padding: 0px;
+                margin: 0px;
+                background: transparent;
+            }
+            """
+        )
         titles.addWidget(eyebrow)
 
-        title = QLabel("Detection History")
+        title = QLabel("Reporting & Statistics")
         title.setObjectName("PageTitle")
+        title.setStyleSheet(
+            """
+            QLabel#PageTitle {
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: 13px;
+                font-weight: 500;
+                letter-spacing: 1.2px;
+                color: #FFFFFF;
+                padding: 0px;
+                margin: 0px;
+                background: transparent;
+            }
+            """
+        )
         titles.addWidget(title)
         self.meta_label = QLabel("Stored detections from connected cameras")
         self.meta_label.setObjectName("PageMeta")
@@ -618,45 +862,9 @@ class HistoryPage(QWidget):
                 color: {PALETTE["accent_2"]}; font-size: 16px;
                 font-weight: 800; letter-spacing: -0.2px;
             }}
-            QLabel#HistKicker {{
-                color: {PALETTE["dim"]}; font-size: 10px;
-                font-weight: 700; letter-spacing: 1.4px;
-            }}
-            QLabel#HistBody {{ color: {PALETTE["text"]}; font-size: 12px; }}
-            QLabel#HistLocOn {{ color: {PALETTE["accent"]}; font-size: 12px; }}
-            QLabel#HistLocOff {{ color: {PALETTE["dim"]}; font-size: 12px; }}
-            QLabel#EmptyTitle {{
-                color: {PALETTE["text"]}; font-size: 15px; font-weight: 700;
-            }}
-            QLabel#HistThumb {{
-                background: {PALETTE["surface"]};
-                border: 1px solid {PALETTE["stroke"]};
-                border-radius: 12px;
-            }}
-            QFrame#HistoryCard {{
-                background: {PALETTE["card"]};
-                border: 1px solid {PALETTE["stroke"]};
-                border-radius: 16px;
-            }}
-            QFrame#EmptyState {{
-                background: {PALETTE["card"]};
-                border: 1px dashed {PALETTE["stroke"]};
-                border-radius: 16px;
-                min-height: 220px;
-            }}
-            QPushButton#MapBtn {{
-                background: {PALETTE["card_alt"]};
-                color: {PALETTE["text"]};
-                border: 1px solid {PALETTE["stroke"]};
-                border-radius: 8px;
-                padding: 4px 12px;
-                font-weight: 600;
-                font-size: 12px;
-            }}
-            QPushButton#MapBtn:hover {{
-                border: 1px solid {PALETTE["accent_2"]};
-                color: {PALETTE["accent_2"]};
-            }}
+            # QLabel#EmptyTitle {{
+            #     color: {PALETTE["text"]}; font-size: 15px; font-weight: 700;
+            # }}
             QScrollArea {{ border: none; background: {PALETTE["bg"]}; }}
             QScrollBar:vertical {{
                 background: transparent; width: 10px; margin: 4px 0;
@@ -724,8 +932,8 @@ class MainWindow(QMainWindow):
         logo_inner.setContentsMargins(0, 0, 0, 12)
         logo_inner.setSpacing(6)
 
-        logo_icon = _svg_label("recycle", 32, PALETTE["accent"], 2.0)
-        logo_icon.setFixedSize(32, 32)
+        logo_icon = _svg_label("recycle", 55, PALETTE["accent"], 2.0)
+        logo_icon.setFixedSize(50, 92)
         logo_inner.addWidget(logo_icon, alignment=Qt.AlignmentFlag.AlignCenter)
 
         logo = QLabel("E-Safai")
